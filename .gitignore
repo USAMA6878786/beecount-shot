@@ -1,0 +1,17 @@
+# 构建中间产物
+build/
+build_out.txt
+
+# 本地工具链（JDK / Android SDK，不进仓库）
+toolchain/
+
+# 编辑器 / 系统
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# 打包出来的 APK 走 GitHub Releases 分发，仓库里只保留源码
+# （如果你想直接把 APK 提交进仓库，去掉下一行即可）
+*.apk
+*.idsig
