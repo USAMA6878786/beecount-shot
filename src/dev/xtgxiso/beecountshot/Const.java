@@ -26,7 +26,11 @@ public final class Const {
     /** 宿主里那个"截图监听器 -> Flutter 通道"的方法名，作为拦截闸门的识别依据。 */
     public static final String TARGET_METHOD = "onScreenshotDetected";
 
-    /** 磁贴 -> 宿主进程 的"放行这一次"定向广播（备用通道）。 */
+    /**
+     * 磁贴 -> 宿主进程 的"放行这一次"定向广播。
+     *
+     * <p>这是唯一的放行通道（早期的"写放行文件"方案已废弃，原因见 {@link ArmSignal}）。
+     */
     public static final String ACTION_ARM = "dev.xtgxiso.beecountshot.ARM";
 
     /** 广播里携带的放行截止时间。 */
