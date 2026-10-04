@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">记账截图</string>
+    <string name="tile_label">记账截图</string>
+    <string name="widget_label">记账支出</string>
+    <string name="module_description">按需触发的截图记账：默认拦截蜜蜂记账对系统截图的自动识别，只有点击控制中心「记账截图」磁贴那一次，才收起面板、延迟截屏并交给 BeeCount 识别记账。</string>
+    <string name="accessibility_description">仅用于在你点击「记账截图」磁贴之后，触发一次系统截屏。本服务不读取屏幕内容、不监听界面事件、不上传任何数据。</string>
+</resources>

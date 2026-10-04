@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="dev.xtgxiso.beecountshot"
+    android:versionCode="14"
+    android:versionName="2.3">
+
+    <uses-sdk
+        android:minSdkVersion="26"
+        android:targetSdkVersion="35" />
+
+    <!--
+        必须声明。模块 targetSdk 35，受 Android 11+ 的包可见性过滤约束：不声明的话
+        getLaunchIntentForPackage("com.tntlikely.beecount") 一定返回 null，
+        表现就是"打开蜜蜂记账"提示找不到应用。
+    -->
+    <queries>
+        <package android:name="com.tntlikely.beecount" />
+        <package android:name="com.tntlikely.beecount.dev" />
+    </queries>
+
+
+    <application
+        android:allowBackup="false"
+        android:description="@string/module_description"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault.Light">
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".CollapseProxyActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- 桌面小组件：日/周/月支出。添加时先弹 WidgetConfigActivity 调背景透明度。 -->
+        <receiver
+            android:name=".ExpenseWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.xtgxiso.beecountshot.WIDGET_REFRESH" />
+                <action android:name="dev.xtgxiso.beecountshot.WIDGET_PING" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_expense_info" />
+        </receiver>
+
+        <activity
+            android:name=".WidgetConfigActivity"
+            android:exported="false"
+            android:label="@string/widget_label"
+            android:theme="@android:style/Theme.DeviceDefault.Light" />
+
+        <service
+            android:name=".ShotTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_shot"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <service
+            android:name=".ShotAccessibilityService"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/shot_accessibility" />
+        </service>
+
+    </application>
+</manifest>

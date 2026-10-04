@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面小组件：日/周/月支出。
+  - 默认 2×1，可横向/纵向拉伸（resizeMode=horizontal|vertical）
+  - 加号添加时先弹配置页（调背景透明度）
+  - updatePeriodMillis = 30 分钟（系统允许的最小值），另外点按可手动刷新
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:initialLayout="@layout/widget_expense_v"
+    android:minWidth="110dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="40dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="1"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="reconfigurable"
+    android:updatePeriodMillis="1800000"
+    android:configure="dev.xtgxiso.beecountshot.WidgetConfigActivity" />
