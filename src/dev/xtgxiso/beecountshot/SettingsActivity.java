@@ -95,12 +95,14 @@ public class SettingsActivity extends Activity {
                 requestRoot();
             }
         });
-        button(root, "重启蜜蜂记账（改完配置必做）", new View.OnClickListener() {
+        button(root, "重启蜜蜂记账", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 restartHost();
             }
         });
+        body(root, "强制停止并重新打开。改完模块配置后 hook 需要重新注入，点它一次就够；"
+                + "没给 root 时只会帮你打开它（无法强制停止）。");
 
         // ---------------- 等待时长 ----------------
         heading(root, "等待时长");
@@ -215,19 +217,14 @@ public class SettingsActivity extends Activity {
         heading(root, "常见问题");
         body(root, "**点了磁贴没反应**\n"
                 + "先看本页顶部状态；磁贴副标题也会提示「未就绪」。多半是蜜蜂记账的界面被系统"
-                + "回收了——打开一次它即可（后台存活就够，不必留在前台）。\n\n"
+                + "回收了——打开一次它即可（后台存活就够，不必留在前台），上面的"
+                + "「重启蜜蜂记账」也能顺手完成这件事。\n\n"
                 + "**改了配置不生效**\n"
                 + "点上面的「重启蜜蜂记账」，hook 只在它启动时注入。\n\n"
                 + "**截到的图里带着控制中心**\n"
                 + "把等待时长调大一档。\n\n"
                 + "**小部件显示灰色**\n"
                 + "说明蜜蜂记账的进程没在跑，此时显示的是上次的数值；打开一次它就会恢复实时。");
-        button(root, "打开蜜蜂记账", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                openHost();
-            }
-        });
     }
 
     @Override
@@ -349,27 +346,47 @@ public class SettingsActivity extends Activity {
         }, "bee-root-request").start();
     }
 
-    /** 改完模块配置必须重启宿主，hook 才会重新注入。 */
+    /**
+     * 一键重启蜜蜂记账：强制停止（需要 root）→ 稍等 → 重新打开。
+     *
+     * <p>以前这里只做强制停止，用户还得再点一次「打开蜜蜂记账」才能用——"重启"这个词
+     * 本来就该包含重新打开，所以合并成一个按钮。
+     */
     private void restartHost() {
-        if (!RootShell.isGranted(this)) {
-            Toast.makeText(this, "需要 root 才能重启蜜蜂记账", Toast.LENGTH_LONG).show();
+        final boolean root = RootShell.isGranted(this);
+        if (!root) {
+            // 没有 root 就退化成"帮你打开它"，至少不用自己找图标
+            Logx.w("[settings] no root, only launching host");
+            Toast.makeText(this, "未授权 root，只能帮你打开蜜蜂记账（无法强制停止）",
+                    Toast.LENGTH_LONG).show();
+            openHost();
             return;
         }
         Toast.makeText(this, "正在重启蜜蜂记账…", Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final boolean ok = RootShell.forceStopHost();
+                final boolean stopped = RootShell.forceStopHost();
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        Toast.makeText(SettingsActivity.this,
-                                ok ? "已强制停止，点击下方「打开蜜蜂记账」即可恢复"
-                                        : "重启失败，请手动强停蜜蜂记账",
-                                Toast.LENGTH_LONG).show();
+                        if (!stopped) {
+                            Toast.makeText(SettingsActivity.this,
+                                    "强制停止失败，改为直接打开蜜蜂记账", Toast.LENGTH_LONG).show();
+                        }
                         hostAnswered = false;
                         hookCount = -1;
                         refreshStatus();
+                        // 等强停真正落地再启动，否则可能被系统忽略
+                        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                openHost();
+                                if (stopped) {
+                                    Logx.i("[settings] host restarted");
+                                }
+                            }
+                        }, 700L);
                     }
                 });
             }
