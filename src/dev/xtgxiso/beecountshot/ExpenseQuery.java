@@ -281,7 +281,7 @@ final class ExpenseQuery {
 
     // ---------------------------------------------------------------- 找库文件
 
-    private static File findDb(Context ctx) {
+    static File findDb(Context ctx) {
         File data = ctx.getDataDir();
         if (data == null) {
             return null;
