@@ -133,6 +133,13 @@ public final class Const {
     /** 数据库文件名（蜜蜂记账用 drift，库放在应用文档目录）。 */
     public static final String DB_NAME = "beecount.sqlite";
 
+    /**
+     * 模块 App 报告"桌面上现在有几个小组件"。
+     *
+     * <p>宿主据此决定要不要为"账目变动"发刷新通知——一个小组件都没有时就不打扰。
+     */
+    public static final String EXTRA_WIDGET_COUNT = "widget_count";
+
     /** 统一日志 TAG。 */
     public static final String TAG = "BeeShot";
 
