@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # BeeCount「记账截图」LSPosed 模块 —— 无 Gradle 构建脚本
 # 链路：aapt2 编译/链接资源 -> javac -> d8 -> 打包 dex 与 xposed 注册文件 -> zipalign -> apksigner
+#
+# 改版本号只需要动下面 VERSION_NAME / VERSION_CODE 两行
+# （同时记得把 xposed/module.prop 里的 version / versionCode 改成一样的）。
+# 产物固定输出到 release/ 目录。
 set -e
+
+VERSION_NAME="2.3"
+VERSION_CODE="14"
 
 ROOT="D:/buddy/2026-10-04-18-03-46"
 PROJ="$ROOT/beecount-shot"
@@ -16,11 +23,12 @@ ANDROID_JAR="$SDK/platforms/android-35/android.jar"
 LIBXPOSED="$TC/libxposed/classes.jar"
 
 OUT="$PROJ/build"
+APK="$PROJ/release/BeecountShot-v${VERSION_NAME}.apk"
 PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe"
 
 echo "=== 0. 清理 ==="
 rm -rf "$OUT"
-mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/res" "$OUT/gen"
+mkdir -p "$OUT/classes" "$OUT/dex" "$OUT/res" "$OUT/gen" "$PROJ/release"
 
 echo "=== 1. aapt2 compile 资源 ==="
 "$BT/aapt2.exe" compile --dir "$PROJ/res" -o "$OUT/res.zip"
@@ -33,8 +41,8 @@ echo "=== 2. aapt2 link 生成基础 APK + R.java ==="
   --java "$OUT/gen" \
   --min-sdk-version 26 \
   --target-sdk-version 35 \
-  --version-code 14 \
-  --version-name 2.3 \
+  --version-code "$VERSION_CODE" \
+  --version-name "$VERSION_NAME" \
   "$OUT/res.zip"
 
 echo "=== 3. javac 编译 Java 源码（含生成的 R.java） ==="
@@ -72,12 +80,12 @@ echo "=== 8. apksigner 签名 ==="
 "$JAVA" -jar "$BT/lib/apksigner.jar" sign \
   --ks "$KS" --ks-pass pass:android --key-pass pass:android \
   --v1-signing-enabled true --v2-signing-enabled true \
-  --out "$PROJ/BeecountShot-v2.3.apk" \
+  --out "$APK" \
   "$OUT/aligned.apk"
 
 echo "=== 9. 校验签名 ==="
-"$JAVA" -jar "$BT/lib/apksigner.jar" verify --print-certs "$PROJ/BeecountShot-v2.3.apk"
+"$JAVA" -jar "$BT/lib/apksigner.jar" verify --print-certs "$APK"
 
 echo ""
 echo "=== 完成 ==="
-ls -la "$PROJ/BeecountShot-v2.3.apk"
+ls -la "$APK"
