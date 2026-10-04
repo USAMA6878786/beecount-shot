@@ -73,6 +73,9 @@ final class HostBridge {
             // 宿主主动推送：盯成功日志，一出现就由宿主自己删（模块 App 会被系统冻结，靠不住）。
             HostWatcher.start(app);
 
+            // 盯住数据库文件的变动：在蜜蜂记账里增删改一笔账，小组件也要跟着更新。
+            DbWatcher.start(app);
+
             // 提前确认/申请一次 root：删除公共存储里的文件需要它。
             // 放在这里（应用启动时）是为了让授权弹窗出现在可预期的时刻，
             // 而不是在"刚记完账"的中间突然弹出来。拒绝也不会重复弹。
@@ -142,10 +145,12 @@ final class HostBridge {
                 public void onReceive(Context context, Intent intent) {
                     final Context c = context.getApplicationContext() != null
                             ? context.getApplicationContext() : context;
+                    final int count = (intent == null) ? 0
+                            : intent.getIntExtra(Const.EXTRA_WIDGET_COUNT, 0);
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            replyWidgetData(c);
+                            replyWidgetData(c, count);
                         }
                     }, "bee-widget-query").start();
                 }
@@ -161,8 +166,9 @@ final class HostBridge {
         }
     }
 
-    private static void replyWidgetData(Context ctx) {
+    private static void replyWidgetData(Context ctx, int widgetCount) {
         try {
+            DbWatcher.setWidgetCount(widgetCount);
             ExpenseQuery.Result r = ExpenseQuery.compute(ctx);
             Intent i = new Intent(Const.ACTION_WIDGET_RESULT);
             i.setPackage(Const.MODULE_PKG);
