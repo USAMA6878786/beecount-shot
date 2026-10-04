@@ -195,7 +195,7 @@ final class HostWatcher {
      * <p>这条广播发的是模块 App **清单里声明**的 widget provider，所以即使它的进程已经
      * 被系统回收，也能被唤起来完成刷新——这比"等它自己轮询"可靠得多。
      */
-    private static void pingWidget(Context ctx) {
+    static void pingWidget(Context ctx) {
         try {
             Intent i = new Intent(Const.ACTION_WIDGET_PING);
             i.setPackage(Const.MODULE_PKG);
