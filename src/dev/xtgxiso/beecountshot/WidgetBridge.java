@@ -90,6 +90,8 @@ final class WidgetBridge {
         try {
             Intent q = new Intent(Const.ACTION_WIDGET_QUERY);
             q.setPackage(HostInfo.pkg());
+            // 顺带告诉宿主桌面上有几个小组件：一个都没有时，它就不用为"账目变动"打扰我们
+            q.putExtra(Const.EXTRA_WIDGET_COUNT, countWidgets(ctx));
             ctx.sendBroadcast(q);
         } catch (Throwable t) {
             Logx.e("[widget] send query failed", t);
@@ -105,6 +107,18 @@ final class WidgetBridge {
             return new Data();
         }
         return back;
+    }
+
+    private static int countWidgets(Context ctx) {
+        try {
+            android.appwidget.AppWidgetManager mgr =
+                    android.appwidget.AppWidgetManager.getInstance(ctx);
+            int[] ids = mgr.getAppWidgetIds(new android.content.ComponentName(
+                    ctx, ExpenseWidgetProvider.class));
+            return ids == null ? 0 : ids.length;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     private WidgetBridge() {
