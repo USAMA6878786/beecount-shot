@@ -1,6 +1,7 @@
 package dev.xtgxiso.beecountshot;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
 import android.content.Context;
@@ -156,13 +157,16 @@ public class SettingsActivity extends Activity {
                 + "点一下小部件会刷新数字并打开蜜蜂记账的记账明细页。\n\n"
                 + "数字直接读蜜蜂记账自己的数据库，与它统计页的口径一致"
                 + "（跟随账本的自定义每月起始日、周一起算、剔除「不计入收支」的记账）。\n\n"
-                + "在蜜蜂记账里手动记一笔，小部件也会立刻跟着更新。");
-        button(root, "添加「记账支出」小部件", new View.OnClickListener() {
+                + "在蜜蜂记账里增删改账目，或手动记一笔，小部件都会在几秒内跟着更新。");
+        button(root, "把「记账支出」放到桌面", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 requestAddWidget();
             }
         });
+        body(root, "Android 不允许应用自己往桌面塞小组件，只能由系统弹一个确认框、你点确认；"
+                + "部分桌面（比如小米）连这个框也不支持。上面这个按钮会先试一次，"
+                + "不行就把手动步骤告诉你——小组件本身照常可用。");
 
         final TextView alphaLabel = new TextView(this);
         alphaLabel.setTextSize(14f);
@@ -463,24 +467,46 @@ public class SettingsActivity extends Activity {
         }, "bee-diag").start();
     }
 
+    /**
+     * 尝试把小组件"钉"到桌面。
+     *
+     * <p>前提说清楚：**Android 不允许应用直接把小组件放到桌面**，只能调用系统提供的
+     * "钉住"接口弹一个确认框，由用户点确认。而且这个接口**部分桌面（如小米）根本不支持**
+     * （{@code isRequestPinAppWidgetSupported()} 返回 false），那就只能手动长按桌面添加。
+     *
+     * <p>所以这里两条路都走：支持就弹框；不支持或失败，就把手动步骤明确告诉用户——
+     * 而不是只丢一句"请手动添加"。
+     */
     private void requestAddWidget() {
         try {
             AppWidgetManager mgr = AppWidgetManager.getInstance(this);
-            if (Build.VERSION.SDK_INT >= 26 && mgr.isRequestPinAppWidgetSupported()) {
+            boolean supported = Build.VERSION.SDK_INT >= 26
+                    && mgr.isRequestPinAppWidgetSupported();
+            Logx.i("[settings] requestPinAppWidget supported=" + supported);
+            if (supported) {
                 ComponentName cn = new ComponentName(this, ExpenseWidgetProvider.class);
                 mgr.requestPinAppWidget(cn, null, null);
-                Logx.i("[settings] requestPinAppWidget sent");
+                Toast.makeText(this, "请在系统弹框里点「添加」", Toast.LENGTH_LONG).show();
                 return;
             }
-            Toast.makeText(this,
-                    "这个桌面不支持自动添加，请长按桌面空白处 → 添加小部件 → 找「记账支出」",
-                    Toast.LENGTH_LONG).show();
+            showManualAddHint("这个桌面不支持应用直接添加小组件");
         } catch (Throwable t) {
             Logx.e("[settings] requestPinAppWidget failed", t);
-            Toast.makeText(this,
-                    "添加失败，请手动：长按桌面 → 添加小部件 → 「记账支出」",
-                    Toast.LENGTH_LONG).show();
+            showManualAddHint("自动添加失败");
         }
+    }
+
+    private void showManualAddHint(String why) {
+        new AlertDialog.Builder(this)
+                .setTitle("手动添加小组件")
+                .setMessage(why + "，需要你手动加一下：\n\n"
+                        + "1. 回到桌面，长按空白处\n"
+                        + "2. 点「添加小部件」（小米里可能叫「添加工具」）\n"
+                        + "3. 找到「记账支出」，按住拖到桌面上\n\n"
+                        + "这是 Android 的限制——应用不能自己往桌面塞小组件，"
+                        + "只能由你在系统界面里确认添加。小组件本身照常工作。")
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     private void requestAddTile() {
