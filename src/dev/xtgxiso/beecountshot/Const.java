@@ -159,9 +159,16 @@ public final class Const {
      * 放行窗口的额外宽限时间。实际窗口 = 触发延迟 + 这个宽限值。
      *
      * <p>需要覆盖：面板收起 + 系统落库 + ContentObserver 回调 + Flutter 通道调用，
-     * 再留足余量。9 秒足够宽松，同时不会因为窗口太长而误放行普通截图。
+     * 再留足余量。
+     *
+     * <p>v2.7 从 9 秒加到 14 秒：真机查明**蜜蜂记账上报一张截图要延迟约 10 秒**
+     * （截图 11:26:54 落盘，11:27:04 才调 {@code onScreenshotDetected}）。
+     * 9 秒时窗口在它上报前就过期了，连点两次必然漏掉第二张。
+     *
+     * <p>不用担心窗口长了会多放行：通行证是**一张换一次上报**，放行过一次就没了，
+     * 不会因为有窗口就把普通截图放进来。
      */
-    public static final long ARM_GRACE_MS = 9000L;
+    public static final long ARM_GRACE_MS = 14000L;
 
     /**
      * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
