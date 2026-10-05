@@ -1,89 +1,112 @@
 package dev.xtgxiso.beecountshot;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * 宿主进程内：**"这张截图可以删了吗"的唯一判定源**。
+ * 宿主进程内：**"这几张截图可以删了吗"的唯一判定源**。
  *
  * <p>判定权必须放在宿主，因为只有宿主同时握有三个事实：
  * <ol>
- *   <li>闸门放行的是哪张图（{@link LastShot}）；</li>
- *   <li>这次"自动记账成功"是什么时候发生的（它自己的 Dart 日志）；</li>
- *   <li>上一次成功是不是已经被用掉过了（本类）。</li>
+ *   <li>闸门放行过哪几张图（{@link LastShot}）；</li>
+ *   <li>「自动记账成功」发生了几次、分别在什么时候（它自己的 Dart 日志）；</li>
+ *   <li>哪几次成功已经被用掉过了（本类）。</li>
  * </ol>
  *
- * <p>历史上判定曾经分散在两处（宿主推送路径 / 模块 App 查询路径各算各的），
- * 而且只检查"成功时间晚于本次放行"。那会漏掉一种情况，也是本类存在的原因：
+ * <p>判定方式在 v2.7 换成了**按次数配对**，因为成功日志里**不带是哪张图**。
+ * 原来的做法（v2.6）是"把成功归给最新放行的那张"，连点两次时会张冠李戴：
  *
  * <pre>
- *   第 1 次：点磁贴 → 放行 A → 记成功（时间戳 S1）→ 删掉 A
- *   第 2 次：隔两三秒又点一次 → 放行 B → 但 B 识别失败，没有新的成功日志
- *           此时"最新成功"仍是 S1，而 S1 又恰好晚于"第 2 次放行"，
- *           于是拿着第 1 次的成功去删第 2 次的截图 —— 误删。
+ *   放行 A（第 0 秒）→ 放行 B（第 3 秒）
+ *   A 的成功在第 13 秒到达，而 B 恰好也在第 13 秒被上报
+ *   → 拿 A 的成功去删 B；可 B 可能根本没识别成功 —— 误删
  * </pre>
  *
- * 所以第三条判据「必须是**没被用过的新成功**」缺一不可：同一次成功只能兑换一张图。
+ * 现在改成数次数：**放行了几张，就等几次成功**。
+ * <ul>
+ *   <li>放行 1 张、等到 1 次成功 → 删这一张；</li>
+ *   <li>放行 2 张、等到 2 次成功 → 两张都删；</li>
+ *   <li>放行 2 张、只等到 1 次成功 → 说明有一张没成，但**不知道是哪张**，
+ *       于是两张都保留（宁可漏删，绝不误删）。</li>
+ * </ul>
  *
- * <p>三条判据全部满足才返回 true，任何一条不满足就保留截图——宁可漏删，绝不误删。
+ * <p>另外保留「同一次成功不能兑换两次」的约束（{@code usedSuccessTs}），
+ * 防止一条成功日志被两条路径各用一次。
  */
 final class HostVerdict {
 
-    /** 放行记录的有效期：超过这个时间的放行不再作为删图依据。 */
+    /** 放行记录的有效期：超过这个时间的放行不再作为删图依据（也避免旧的失败记录一直挡路）。 */
     static final long GATE_RECENCY_MS = 10L * 60L * 1000L;
 
-    /** 允许的时钟/日志节流误差。成功时间可以略早于放行时间，但不能早太多。 */
-    private static final long SLACK_MS = 2000L;
+    /** 一次放行最多等多久的结果。超过就不再把它算进"这一批"，免得一次失败永久堵住后续。 */
+    private static final long ALLOW_TTL_MS = 90000L;
 
-    /** 已经据此动作过的最新成功时间戳。核心防重复/防误删字段。 */
+    /** 允许的时钟/日志节流误差。 */
+    private static final long SLACK_MS = 1000L;
+
+    /** 已经据此动作过的最新成功时间戳。 */
     private static volatile long usedSuccessTs = 0L;
 
-    /** 已判定可删、但可能还没删成功的文件（模块 App 的兜底删图要靠它确认）。 */
-    private static volatile String pendingPath = null;
+    /** 这个时刻之前的放行都已结算完毕，不再参与判定。 */
+    private static volatile long resolvedUpToTs = 0L;
+
+    /** 已判定可删、但还没删掉的文件（模块 App 的兜底删图要靠它确认）。 */
+    private static final List<String> pending = new ArrayList<String>(4);
 
     /**
-     * @param path      待判定的截图路径
-     * @param successTs 蜜蜂记账日志里**最新一次**「自动记账成功」的时间戳（毫秒）
-     * @return true 表示这张图可以在这次成功之后被删掉
-     */
-    static synchronized boolean shouldDelete(String path, long successTs) {
-        if (path == null || successTs <= 0L) {
-            return false;
-        }
-        // 路径本身必须先过安全检查（只可能是截图、不能是相机照片、不能有 shell 元字符）。
-        if (!RootShell.isSafeScreenshotPath(path)) {
-            return false;
-        }
-        // ① 这张图必须就是闸门最近放行的那一张——不是它，后面两条都不成立。
-        if (!LastShot.allowedMostRecently(path, GATE_RECENCY_MS)) {
-            Logx.i("[verdict] no: not the gated screenshot (path=" + path + ")");
-            return false;
-        }
-        long allowedAt = LastShot.at();
-        // ② 成功必须发生在这次放行之后（允许 2 秒误差）。
-        if (successTs < allowedAt - SLACK_MS) {
-            Logx.i("[verdict] no: success(" + successTs + ") not after allow(" + allowedAt + ")");
-            return false;
-        }
-        // ③ 必须是**没被用过的新成功**——同一次成功只能兑换一张图。
-        if (successTs <= usedSuccessTs) {
-            Logx.i("[verdict] no: success(" + successTs + ") already used (used=" + usedSuccessTs + ")"
-                    + " -> refusing to delete a second screenshot on one success");
-            return false;
-        }
-        Logx.i("[verdict] YES: delete " + path
-                + " (successTs=" + successTs + " allowedAt=" + allowedAt + ")");
-        return true;
-    }
-
-    /**
-     * 已经据此执行（或已经交给模块 App 执行）后调用。
+     * 结算一次成功，返回这次可以删掉的文件（可能为 null = 还不能删）。
      *
-     * <p>必须在**删除动作之前**调用：先占位再删，可以避免同一次成功被两条路径
-     * 各用一次（宿主删 + 模块 App 兜底删），也不会因为删除耗时而出现重入。
+     * @param successTs   蜜蜂记账日志里**最新一次**「自动记账成功」的时间戳（毫秒）
+     * @param appLogsJson 蜜蜂记账的 {@code flutter.app_logs} 原文（用来数成功次数）
      */
-    static synchronized void consume(String path, long successTs) {
-        if (successTs > usedSuccessTs) {
-            usedSuccessTs = successTs;
+    static synchronized String[] decide(long successTs, String appLogsJson) {
+        if (successTs <= 0L) {
+            return null;
         }
-        pendingPath = path;
+        if (successTs <= usedSuccessTs) {
+            return null; // 这次成功已经兑换过了
+        }
+
+        // 收集这一批"已放行、还不知道结果"的图：放行时间必须在本次成功之前，
+        // 且不能太老、也不能是已经结算过的。
+        List<String> batch = new ArrayList<String>(4);
+        long earliest = Long.MAX_VALUE;
+        int n = LastShot.size();
+        for (int i = 0; i < n; i++) {
+            long at = LastShot.atAt(i);
+            String p = LastShot.pathAt(i);
+            if (at <= resolvedUpToTs || at > successTs) {
+                continue;
+            }
+            if (at < successTs - ALLOW_TTL_MS) {
+                continue;
+            }
+            if (p == null || !RootShell.isSafeScreenshotPath(p)) {
+                continue;
+            }
+            batch.add(p);
+            if (at < earliest) {
+                earliest = at;
+            }
+        }
+        if (batch.isEmpty()) {
+            return null;
+        }
+
+        int s = HostProbe.countSuccessesAfter(appLogsJson, earliest - SLACK_MS);
+        if (s < batch.size()) {
+            Logx.i("[verdict] wait: " + batch.size() + " screenshot(s) handed over, "
+                    + s + " success(es) so far -> cannot tell which one, keeping all");
+            return null;
+        }
+
+        usedSuccessTs = successTs;
+        resolvedUpToTs = successTs;
+        pending.clear();
+        pending.addAll(batch);
+        Logx.i("[verdict] DELETE " + batch.size() + " file(s) on "
+                + s + " success(es): " + batch);
+        return batch.toArray(new String[batch.size()]);
     }
 
     /**
@@ -91,24 +114,40 @@ final class HostVerdict {
      *
      * <p>按文件名比，兼容宿主记的是完整路径、模块 App 查的是另一条写法的情况。
      */
-    static boolean alreadyDecided(String path) {
-        String p = pendingPath;
-        if (p == null || path == null) {
+    static synchronized boolean alreadyDecided(String path) {
+        if (path == null) {
             return false;
         }
-        String a = baseName(p);
-        return a.length() > 0 && a.equals(baseName(path));
+        String want = baseName(path);
+        if (want.length() == 0) {
+            return false;
+        }
+        for (int i = 0; i < pending.size(); i++) {
+            if (want.equals(baseName(pending.get(i)))) {
+                return true;
+            }
+        }
+        return false;
     }
 
-    /** 已判定可删的文件已经处理完（删掉了或放弃），清掉占位。 */
-    static synchronized void clearPending() {
-        pendingPath = null;
+    /** 这张图处理完了（删掉或确认删不掉），从待办里去掉。 */
+    static synchronized void clearOne(String path) {
+        if (path == null) {
+            return;
+        }
+        String want = baseName(path);
+        for (int i = pending.size() - 1; i >= 0; i--) {
+            if (want.equals(baseName(pending.get(i)))) {
+                pending.remove(i);
+            }
+        }
     }
 
     /** 诊断快照。 */
-    static String diag() {
+    static synchronized String diag() {
         return "used_success_ts=" + usedSuccessTs
-                + "|pending_path=" + (pendingPath == null ? "<none>" : pendingPath);
+                + "|resolved_up_to_ts=" + resolvedUpToTs
+                + "|pending=" + (pending.isEmpty() ? "<none>" : pending.toString());
     }
 
     static String baseName(String path) {
