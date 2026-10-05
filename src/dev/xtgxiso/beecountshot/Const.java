@@ -36,6 +36,14 @@ public final class Const {
     /** 广播里携带的放行截止时间。 */
     public static final String EXTRA_UNTIL = "until_ms";
 
+    /**
+     * 广播里携带的"允许按处理顺序推断着删"开关。
+     *
+     * <p>设置页的选项在模块 App 进程里，而删图判定在宿主进程里，两个进程够不着对方的
+     * SharedPreferences，所以只能跟着放行广播一起送过去（正好每次截屏前都会发一次）。
+     */
+    public static final String EXTRA_PRECISE = "precise";
+
     /** 模块 App 的包名（宿主回广播时用）。 */
     public static final String MODULE_PKG = "dev.xtgxiso.beecountshot";
 
