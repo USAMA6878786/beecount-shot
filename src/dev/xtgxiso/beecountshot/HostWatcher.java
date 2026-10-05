@@ -224,8 +224,7 @@ final class HostWatcher {
                 public void run() {
                     try {
                         if (HostRoot.ensure(ctx)) {
-                            HostRoot.broadcast(Const.ACTION_WIDGET_PING, Const.MODULE_PKG,
-                                    null, 0L,
+                            HostRoot.broadcast(Const.ACTION_WIDGET_PING, Const.MODULE_PKG, null,
                                     Intent.FLAG_RECEIVER_FOREGROUND
                                             | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
                         }
