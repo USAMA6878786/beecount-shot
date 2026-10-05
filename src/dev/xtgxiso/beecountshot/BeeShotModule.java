@@ -181,12 +181,12 @@ public class BeeShotModule extends XposedModule {
                 if (!Const.TARGET_METHOD.equals(method)) {
                     return chain.proceed();
                 }
-                if (!ArmSignal.consume()) {
+                String path = String.valueOf(chain.getArg(1));
+                if (!ArmSignal.consume(path)) {
                     HostTelemetry.bump("channel_blocked");
-                    Logx.i("[gate-channel] BLOCKED a screenshot report (not armed)");
+                    Logx.i("[gate-channel] BLOCKED a screenshot report (no pass / duplicate)");
                     return null;
                 }
-                String path = String.valueOf(chain.getArg(1));
                 // 就地记下"闸门放行了哪个文件"——这是后续判断"这张图被交给蜜蜂记账了"
                 // 最直接的证据，比去读蜜蜂记账自己的列表可靠得多。
                 LastShot.record(path);
