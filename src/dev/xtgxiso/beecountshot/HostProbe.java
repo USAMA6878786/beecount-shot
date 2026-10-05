@@ -55,10 +55,15 @@ final class HostProbe {
             // 两种情况算"可删"：
             //   ① 宿主已经判定过这张图（可能自己没删成功，正等模块 App 兜底）；
             //   ② 现在结算一次成功，这张图在结算结果里。
+            final String logsJson = flutter.getString(Const.K_APP_LOGS, null);
             boolean success = HostVerdict.alreadyDecided(path);
             if (!success) {
-                String[] batch = HostVerdict.decide(successTs,
-                        flutter.getString(Const.K_APP_LOGS, null));
+                // 和宿主推送路径一样：事件钟优先用「落库完成」，识别失败也要能触发结算。
+                long eventTs = HostProbe.latestOutcomeTs(logsJson);
+                if (eventTs <= 0L) {
+                    eventTs = successTs;
+                }
+                String[] batch = HostVerdict.decide(eventTs, logsJson);
                 if (batch != null) {
                     for (int i = 0; i < batch.length; i++) {
                         if (baseName(batch[i]).equals(baseName(path))) {
@@ -130,6 +135,87 @@ final class HostProbe {
             Logx.w("[probe] app_logs count failed: " + t.getMessage());
         }
         return n;
+    }
+
+    /** 一次"处理完一张截图"的结果。 */
+    static final class Outcome {
+        final long ts;
+        final boolean hasBill;
+
+        Outcome(long ts, boolean hasBill) {
+            this.ts = ts;
+            this.hasBill = hasBill;
+        }
+    }
+
+    /**
+     * 列出 {@code afterTs} 之后所有的"处理完一张截图"事件，按时间先后。
+     *
+     * <p>这是精确配对的基础：蜜蜂记账每处理完一张截图就写一条
+     * {@link Const#OUTCOME_LOG_MARKER}，里面有 {@code 成功=N 笔}——
+     * N>0 说明这张有账目，N=0 说明未识别到账单。
+     * 于是"放行的先后顺序"和"出结果的先后顺序"可以一一对上，不用再猜。
+     */
+    static java.util.List<Outcome> outcomesAfter(String json, long afterTs) {
+        java.util.List<Outcome> out = new java.util.ArrayList<Outcome>();
+        if (json == null || json.length() == 0) {
+            return out;
+        }
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String msg = o.optString("message", "");
+                if (msg.indexOf(Const.OUTCOME_LOG_MARKER) < 0) {
+                    continue;
+                }
+                long ts = o.optLong("timestamp", 0L);
+                if (ts <= afterTs) {
+                    continue;
+                }
+                out.add(new Outcome(ts, parseBills(msg) > 0));
+            }
+        } catch (Throwable t) {
+            Logx.w("[probe] app_logs outcomes parse failed: " + t.getMessage());
+        }
+        // 数组顺序理论上就是时间顺序，排一下更稳妥。
+        java.util.Collections.sort(out, new java.util.Comparator<Outcome>() {
+            @Override
+            public int compare(Outcome a, Outcome b) {
+                return a.ts < b.ts ? -1 : (a.ts > b.ts ? 1 : 0);
+            }
+        });
+        return out;
+    }
+
+    /** 最新一条"处理完"事件的时间戳；一条都没有则 0。 */
+    static long latestOutcomeTs(String json) {
+        java.util.List<Outcome> all = outcomesAfter(json, 0L);
+        return all.isEmpty() ? 0L : all.get(all.size() - 1).ts;
+    }
+
+    /** 从 {@code 成功=N 笔} 里抠出 N。解析不出来按 0（= 没识别到账单）处理，方向是安全的。 */
+    private static int parseBills(String msg) {
+        int idx = msg.indexOf(Const.OUTCOME_BILLS_FIELD);
+        if (idx < 0) {
+            return 0;
+        }
+        int s = idx + Const.OUTCOME_BILLS_FIELD.length();
+        int e = s;
+        while (e < msg.length() && msg.charAt(e) >= '0' && msg.charAt(e) <= '9') {
+            e++;
+        }
+        if (e == s) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(msg.substring(s, e));
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /**
