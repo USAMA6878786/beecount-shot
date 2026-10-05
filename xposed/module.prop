@@ -1,7 +1,7 @@
 id=beecount-shot
 name=记账截图 (BeeCount)
-version=v2.7
-versionCode=18
+version=v2.8
+versionCode=19
 author=xtgxiso
 description=为蜜蜂记账（BeeCount）提供「按需截图记账」与「支出桌面小组件」。默认拦截它对系统截图的自动识别；只有点控制中心「记账截图」磁贴那一次才收起面板、延迟截屏并交给它识别记账，识别成功后可自动删除该截图。附带日/本周/本月支出桌面小组件，白底可调透明度、随宽度自适应横竖版式。
 minApiVersion=101
