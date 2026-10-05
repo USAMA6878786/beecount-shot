@@ -77,6 +77,47 @@ final class HostRoot {
         }
         String cmd = "if [ -f '" + path + "' ]; then rm -f '" + path + "' && echo DELETED; "
                 + "else echo MISSING; fi";
+        String out = su(cmd, 15000L);
+        boolean ok = out != null && out.indexOf("DELETED") >= 0;
+        Logx.i("[root] host delete " + path + " -> "
+                + (ok ? "OK" : ("FAILED out=" + (out == null ? "" : out.trim()))));
+        return ok;
+    }
+
+    /**
+     * 用 root 发一条广播（普通广播的**冗余通道**）。
+     *
+     * <p>为什么还要多此一举：模块 App / 宿主都可能在后台被系统冻结，而发给缓存态应用的
+     * 广播会被**延迟投递**（真机日志里回包全是 {@code decisive=false}，就是这么来的）。
+     * root 的 {@code am broadcast} 走的是 shell 身份，不受应用自己的后台限制；
+     * 再加上 {@link Intent#FLAG_RECEIVER_INCLUDE_BACKGROUND}，系统会把广播投给
+     * 处于后台的接收器，不再排队等着解冻。
+     *
+     * <p>这个通道是**幂等**的：放行信号本来就是"设一个截止时间"，收到两次取最大值，
+     * 小组件刷新收到两次也只是多刷一次。所以两条通道一起发，谁先到用谁，没有副作用。
+     *
+     * @param flags 传给 {@code am broadcast -f} 的 Intent flag，传 0 表示不加
+     */
+    static boolean broadcast(String action, String pkg, String longKey, long longValue, int flags) {
+        StringBuilder cmd = new StringBuilder("am broadcast -a ").append(action);
+        if (pkg != null && pkg.length() > 0) {
+            cmd.append(" -p ").append(pkg);
+        }
+        if (longKey != null && longKey.length() > 0) {
+            cmd.append(" --el ").append(longKey).append(' ').append(longValue);
+        }
+        if (flags != 0) {
+            cmd.append(" -f ").append(flags);
+        }
+        String out = su(cmd.toString(), 15000L);
+        boolean ok = out != null && out.indexOf("Error") < 0 && out.indexOf("error") < 0;
+        Logx.i("[root] host broadcast '" + cmd + "' -> "
+                + (ok ? "sent" : "FAILED") + " out=" + (out == null ? "" : out.trim().replace('\n', ' ')));
+        return ok;
+    }
+
+    /** 跑一条 su 命令，返回合并后的输出；失败返回 null。阻塞，必须在子线程调用。 */
+    private static String su(String cmd, long timeoutMs) {
         try {
             ProcessBuilder pb = new ProcessBuilder("su", "-c", cmd);
             pb.redirectErrorStream(true);
@@ -88,15 +129,11 @@ final class HostRoot {
                 sb.append(line).append('\n');
             }
             br.close();
-            p.waitFor(15000L, TimeUnit.MILLISECONDS);
-            String out = sb.toString();
-            boolean ok = out.indexOf("DELETED") >= 0;
-            Logx.i("[root] host delete " + path + " -> "
-                    + (ok ? "OK" : ("FAILED out=" + out.trim())));
-            return ok;
+            p.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
+            return sb.toString();
         } catch (Throwable t) {
-            Logx.e("[root] host delete failed", t);
-            return false;
+            Logx.e("[root] host su failed: " + cmd, t);
+            return null;
         }
     }
 
