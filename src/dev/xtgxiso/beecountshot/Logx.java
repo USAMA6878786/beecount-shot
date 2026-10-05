@@ -132,6 +132,11 @@ public final class Logx {
         write("E", msg, t);
     }
 
+    /** 没有异常对象可带时用这个；级别仍然是 E（在 logcat 里一样能用 *:E 过滤到）。 */
+    public static void e(String msg) {
+        write("E", msg, null);
+    }
+
     private static void write(String level, String msg, Throwable t) {
         // 同时保留 logcat，方便开发时直接看。
         if ("E".equals(level)) {
