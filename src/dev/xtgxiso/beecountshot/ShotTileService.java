@@ -137,6 +137,15 @@ public class ShotTileService extends TileService {
                         long t0 = System.currentTimeMillis();
                         // 先解析出宿主真实包名（广播定向要用它；root 命令也用它）。
                         HostInfo.pkg(app);
+
+                        // 冗余通道：再让 root 发一次放行信号。宿主退后台可能被冻结，
+                        // 普通广播要等它解冻才投得到；root 这条不受应用后台限制。
+                        // 幂等（截止时间是取最大值），所以两条一起发没有副作用。
+                        RootShell.broadcast(Const.ACTION_ARM, HostInfo.pkg(),
+                                Const.EXTRA_UNTIL, until,
+                                Intent.FLAG_RECEIVER_FOREGROUND
+                                        | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
+
                         RootShell.Result r = RootShell.collapseStatusBar();
                         long spent = System.currentTimeMillis() - t0;
                         Logx.i("[tile] root stage finished in " + spent + "ms, exit=" + r.exit);
