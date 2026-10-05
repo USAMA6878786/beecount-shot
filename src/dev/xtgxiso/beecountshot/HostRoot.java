@@ -96,15 +96,16 @@ final class HostRoot {
      * <p>这个通道是**幂等**的：放行信号本来就是"设一个截止时间"，收到两次取最大值，
      * 小组件刷新收到两次也只是多刷一次。所以两条通道一起发，谁先到用谁，没有副作用。
      *
-     * @param flags 传给 {@code am broadcast -f} 的 Intent flag，传 0 表示不加
+     * @param extras 直接拼在命令后面的 extra 段，没有就传 null
+     * @param flags  传给 {@code am broadcast -f} 的 Intent flag，传 0 表示不加
      */
-    static boolean broadcast(String action, String pkg, String longKey, long longValue, int flags) {
+    static boolean broadcast(String action, String pkg, String extras, int flags) {
         StringBuilder cmd = new StringBuilder("am broadcast -a ").append(action);
         if (pkg != null && pkg.length() > 0) {
             cmd.append(" -p ").append(pkg);
         }
-        if (longKey != null && longKey.length() > 0) {
-            cmd.append(" --el ").append(longKey).append(' ').append(longValue);
+        if (extras != null && extras.length() > 0) {
+            cmd.append(' ').append(extras);
         }
         if (flags != 0) {
             cmd.append(" -f ").append(flags);
