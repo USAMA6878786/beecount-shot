@@ -142,7 +142,9 @@ public class ShotTileService extends TileService {
                         // 普通广播要等它解冻才投得到；root 这条不受应用后台限制。
                         // 幂等（截止时间是取最大值），所以两条一起发没有副作用。
                         RootShell.broadcast(Const.ACTION_ARM, HostInfo.pkg(),
-                                Const.EXTRA_UNTIL, until,
+                                "--el " + Const.EXTRA_UNTIL + " " + until
+                                        + " --ez " + Const.EXTRA_PRECISE + " "
+                                        + (Prefs.precisePartial(app) ? "true" : "false"),
                                 Intent.FLAG_RECEIVER_FOREGROUND
                                         | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
 
@@ -258,6 +260,8 @@ public class ShotTileService extends TileService {
             Intent arm = new Intent(Const.ACTION_ARM);
             arm.setPackage(HostInfo.pkg());
             arm.putExtra(Const.EXTRA_UNTIL, until);
+            // 把设置页那个"推断着删"的开关搭这趟车送进宿主进程（见 Const.EXTRA_PRECISE）。
+            arm.putExtra(Const.EXTRA_PRECISE, Prefs.precisePartial(app));
             arm.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
             app.sendBroadcast(arm);
             Logx.i("[tile] arm broadcast sent (backup channel)");
