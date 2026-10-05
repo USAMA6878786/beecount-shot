@@ -163,6 +163,17 @@ public final class Const {
      */
     public static final long ARM_GRACE_MS = 9000L;
 
+    /**
+     * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
+     *
+     * <p>这个 flag 在 Android 里是**隐藏 API**，公开 SDK 的 android.jar 里没有这个常量，
+     * 直接引用 {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 会编译不过，所以把值抄在这里。
+     *
+     * <p>作用：带上它，系统会把广播直接投给处于后台（缓存态）的接收器，而不是排队等到
+     * 应用被解冻。这正是"root 补发广播"这条冗余通道的价值所在。
+     */
+    public static final int FLAG_RECEIVER_INCLUDE_BACKGROUND = 0x01000000;
+
     // ---------------------------------------------------------------- 宿主路径
 
     /** 宿主自己进程日志的候选路径（宿主写自己的目录；属辅助通道，主通道是广播遥测）。 */
