@@ -132,6 +132,37 @@ final class HostProbe {
         return n;
     }
 
+    /**
+     * 把蜜蜂记账最近几条日志原文摘出来（只留 message，截断）。
+     *
+     * <p>纯为诊断：成功日志里**不带是哪张图**，想知道"未识别到账单"在日志里到底写成什么、
+     * 能不能据此精确配对，就得先看见原文。
+     */
+    static String recentLogs(String json, int max, int maxLen) {
+        if (json == null || json.length() == 0) {
+            return "<none>";
+        }
+        try {
+            JSONArray arr = new JSONArray(json);
+            StringBuilder sb = new StringBuilder();
+            int from = Math.max(0, arr.length() - max);
+            for (int i = from; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(" // ");
+                }
+                sb.append(o.optString("message", ""));
+            }
+            String s = sb.toString().replace('\n', ' ');
+            return s.length() > maxLen ? s.substring(s.length() - maxLen) : s;
+        } catch (Throwable t) {
+            return "<parse-failed: " + t.getMessage() + ">";
+        }
+    }
+
     /** 该截图路径是否被蜜蜂记账处理过（按文件名比，兼容各种路径写法）。 */
     private static boolean processedContains(SharedPreferences flutter, String path) {
         String base = baseName(path);
@@ -245,6 +276,7 @@ final class HostProbe {
         try {
             String logs = flutter.getString(Const.K_APP_LOGS, null);
             sb.append("|applog_len=").append(logs == null ? -1 : logs.length());
+            sb.append("|recent_logs=").append(recentLogs(logs, 8, 600));
         } catch (Throwable t) {
             sb.append("|applog_error=").append(t.getMessage());
         }
