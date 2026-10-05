@@ -66,6 +66,17 @@ final class HostWatcher {
                             final String logsJson = prefs.getString(Const.K_APP_LOGS, null);
                             final long successTs = HostProbe.latestSuccessTs(logsJson);
 
+                            // 触发结算的"事件钟"：优先用「落库完成」（成功失败都有），
+                            // 没有才退回「自动记账成功」。
+                            //
+                            // 这一步很关键：只看成功时间戳的话，**识别失败那次根本不会
+                            // 触发结算**，于是那张图永远没人去"确认它没识别到"，
+                            // 后面的配对就会整体错位。
+                            long eventTs = HostProbe.latestOutcomeTs(logsJson);
+                            if (eventTs <= 0L) {
+                                eventTs = successTs;
+                            }
+
                             // 任何一次成功记账都顺手让桌面小组件刷新——不限于"走磁贴那一次"。
                             // 你在蜜蜂记账里手动记的账也能立刻反映到小组件上，不用等 30 分钟周期。
                             if (successTs > 0L && successTs != lastPingedTs) {
@@ -73,14 +84,14 @@ final class HostWatcher {
                                 pingWidget(appCtx);
                             }
 
-                            // 删哪几张由 HostVerdict 一家说了算（按成功次数配对）。
-                            // 判定必须在**起线程之前**同步做完：否则同一次成功可能被
+                            // 删哪几张由 HostVerdict 一家说了算。
+                            // 判定必须在**起线程之前**同步做完：否则同一次事件可能被
                             // 两条并行的回调各用一次。
-                            final String[] toDelete = HostVerdict.decide(successTs, logsJson);
+                            final String[] toDelete = HostVerdict.decide(eventTs, logsJson);
                             if (toDelete == null) {
                                 return;
                             }
-                            Logx.i("[watch] success confirmed (ts=" + successTs
+                            Logx.i("[watch] settled (eventTs=" + eventTs
                                     + ") -> deleting " + toDelete.length + " file(s)");
 
                             // 一定要放到子线程：首次确认 root 会弹授权框、可能阻塞十几秒，
