@@ -7,8 +7,8 @@
 # 产物固定输出到 release/ 目录。
 set -e
 
-VERSION_NAME="2.9"
-VERSION_CODE="20"
+VERSION_NAME="2.10"
+VERSION_CODE="21"
 
 ROOT="D:/buddy/2026-10-04-18-03-46"
 PROJ="$ROOT/beecount-shot"
