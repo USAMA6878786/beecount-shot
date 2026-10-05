@@ -1,5 +1,6 @@
 package dev.xtgxiso.beecountshot;
 
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
@@ -38,6 +39,16 @@ public class ShotTileService extends TileService {
     @Override
     public void onStartListening() {
         super.onStartListening();
+
+        // 先查截屏能力：root 模拟组合键是主路径，无障碍只是退路——
+        // 所以只有在"既没 root、无障碍又没开"时才提示。注意**每次覆盖安装后
+        // 系统都会关掉无障碍服务**，这是最常见的一种"点了没反应"，
+        // 直接写在副标题上，用户下拉面板就能看到。
+        if (!ShotAccessibilityService.isReady() && !RootShell.isGranted(this)) {
+            applyTile("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
+            return;
+        }
+
         applyTile("检查中…", Tile.STATE_INACTIVE);
 
         // 副标题显示"现在能不能用"：蜜蜂记账的主界面被系统回收后它的截图监听会失效，
@@ -92,18 +103,21 @@ public class ShotTileService extends TileService {
         ShotBridge.ensureReceiver(app);
 
         try {
-            // 前提：截屏能力已就绪。没开无障碍就没有任何办法截屏，直接引导。
-            if (!ShotAccessibilityService.isReady()) {
-                Logx.w("[tile] accessibility service NOT ready -> guiding user to enable it");
-                Toast.makeText(app, "请先开启「记账截图」的截屏服务", Toast.LENGTH_LONG).show();
-                Intent settings = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                startActivityAndCollapse(settings);
-                return;
-            }
-
             final long delay = Prefs.delayMs(app);
             final boolean root = RootShell.isGranted(app);
+
+            // 截屏的两条路：root（主）或无障碍服务（退路）。
+            //
+            // root 用 input keycombination 模拟"电源键+音量下"，走系统真实截图流程。
+            // 之所以把它做成主路径：无障碍服务在**应用被覆盖安装后会被系统自动关闭**
+            // （服务代码变了，之前那次授权作废）——以前每次更新模块，用户都会遇到
+            // "磁贴点了没反应"。有 root 就完全不依赖无障碍；两条都没有才引导去开。
+            // 引导逻辑本身也要绝对可靠，见 guideToAccessibilitySettings()。
+            if (!ShotAccessibilityService.isReady() && !root) {
+                Logx.w("[tile] no root and a11y not ready -> guiding user to enable it");
+                guideToAccessibilitySettings();
+                return;
+            }
             final long clickAt = System.currentTimeMillis();
             // 窗口给得宽松一点：su 开销 + 延迟 + 系统落库 + ContentObserver 回调都要装进去。
             final long until = clickAt + delay + Const.ARM_GRACE_MS + 6000L;
@@ -136,9 +150,13 @@ public class ShotTileService extends TileService {
                         // 延迟从"收起命令已发出"之后起算，保证面板来得及收干净。
                         Logx.i("[tile] shooting in " + delay + "ms");
                         final long shotAt = System.currentTimeMillis();
-                        ShotAccessibilityService.scheduleShot(delay);
+                        try {
+                            Thread.sleep(delay);
+                        } catch (InterruptedException ignored) {
+                        }
 
-                        // 记账成功后自动删截图（独立的观察线程，不阻塞这里的收尾工作）。
+                        // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
+                        // 必须在**截屏之前**就起好，否则可能错过删除窗口。
                         if (Prefs.autoDelete(app)) {
                             new Thread(new Runnable() {
                                 @Override
@@ -148,6 +166,21 @@ public class ShotTileService extends TileService {
                             }, "bee-shot-cleaner").start();
                         } else {
                             Logx.i("[tile] auto-delete is OFF; screenshot will be kept");
+                        }
+
+                        // 主路径：root 触发系统截屏（内部会自己验证图有没有出来）。
+                        // 不依赖无障碍服务，所以覆盖安装后系统关掉它也无所谓。
+                        boolean sent = RootShell.takeScreenshotViaRoot();
+
+                        // root 三条命令都没截出图，才退回无障碍服务——双保险，谁成用谁。
+                        if (!sent) {
+                            Logx.w("[tile] root screenshot produced nothing -> falling back to a11y");
+                            if (ShotAccessibilityService.isReady()) {
+                                ShotAccessibilityService.scheduleShot(0);
+                            } else {
+                                Logx.e("[tile] neither root nor a11y produced a screenshot;"
+                                        + " see the [root] shot cmd[] lines above");
+                            }
                         }
 
                         // 截屏之后等一会儿，把 logcat 快照落到 Download。
@@ -172,6 +205,45 @@ public class ShotTileService extends TileService {
         }
     }
 
+    /**
+     * 截屏服务没开时，把用户送到"无障碍设置"页。
+     *
+     * <p><b>这段代码曾经把用户坑惨了</b>，所以两条保障缺一不可：
+     *
+     * <ol>
+     *   <li>Android 14（API 34）起**禁止 TileService 用 Intent 调
+     *       {@code startActivityAndCollapse}**，会抛
+     *       {@code UnsupportedOperationException: Starting activity from TileService
+     *       using an Intent is not allowed}。必须改用 {@code PendingIntent} 版本。</li>
+     *   <li>兜底的 Toast 也靠不住：Android 12 起后台应用发的 Toast 会被系统直接丢掉，
+     *       而磁贴点击未必算"前台"。所以兜底改成**直接改磁贴自己的副标题**
+     *       （此刻面板就开着，用户一定看得见），不依赖任何权限。</li>
+     * </ol>
+     */
+    private void guideToAccessibilitySettings() {
+        Intent settings = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                PendingIntent pi = PendingIntent.getActivity(this, 1001, settings,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                startActivityAndCollapse(pi);
+            } else {
+                startActivityAndCollapse(settings);
+            }
+            Logx.i("[tile] guided user to accessibility settings");
+            return;
+        } catch (Throwable t) {
+            Logx.e("[tile] startActivityAndCollapse failed, fallback to tile text", t);
+        }
+        // 最后一道保险：把状态写回磁贴自己，面板此刻就开着，用户一定看得见。
+        applyTile("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
+        try {
+            Toast.makeText(this, "请先开启「记账截图」的截屏服务", Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void sendArmBroadcast(Context app, long until) {
         try {
             Intent arm = new Intent(Const.ACTION_ARM);
@@ -185,7 +257,14 @@ public class ShotTileService extends TileService {
         }
     }
 
-    /** 非 root 的收面板方案：借 startActivityAndCollapse 启动一个透明页。 */
+    /**
+     * 非 root 的收面板方案：借 {@code startActivityAndCollapse} 启动一个透明页。
+     *
+     * <p>和 {@link #guideToAccessibilitySettings()} 一样受 Android 14 的限制：
+     * API 34 起 {@code startActivityAndCollapse(Intent)} 直接抛
+     * {@code UnsupportedOperationException}，必须用 {@code PendingIntent} 版本。
+     * 这里如果漏改，无 root 的用户点击磁贴会**静默无反应**。
+     */
     private void collapseByActivity() {
         new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
@@ -193,7 +272,14 @@ public class ShotTileService extends TileService {
                 try {
                     Intent proxy = new Intent(ShotTileService.this, CollapseProxyActivity.class);
                     proxy.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivityAndCollapse(proxy);
+                    if (Build.VERSION.SDK_INT >= 34) {
+                        PendingIntent pi = PendingIntent.getActivity(
+                                ShotTileService.this, 1002, proxy,
+                                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                        startActivityAndCollapse(pi);
+                    } else {
+                        startActivityAndCollapse(proxy);
+                    }
                     Logx.i("[tile] startActivityAndCollapse fired");
                 } catch (Throwable t) {
                     Logx.e("[tile] startActivityAndCollapse failed", t);
