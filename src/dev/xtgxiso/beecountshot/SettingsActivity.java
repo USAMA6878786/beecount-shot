@@ -70,9 +70,8 @@ public class SettingsActivity extends Activity {
         // ---------------- 使用前提 ----------------
         heading(root, "使用前提");
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
-                + "• 已授予本模块 root（用于收起控制中心、删除截图、重启宿主）\n"
-                + "• 已开启「记账截图」的截屏服务（无障碍）\n"
-                + "• 蜜蜂记账近期打开过（它的截图监听挂在主界面上，界面被回收就会失效）");
+                + "• 已授予本模块 root（用于模拟截屏、收起控制中心、删除截图、重启宿主）\n"
+                + "• 无 root 时才需要额外开启「记账截图」的截屏服务（无障碍）");
 
         // ---------------- 磁贴 ----------------
         heading(root, "控制中心磁贴");
@@ -274,13 +273,23 @@ public class SettingsActivity extends Activity {
         boolean a11y = ShotAccessibilityService.isReady();
         boolean root = RootShell.isGranted(this);
 
-        sb.append(a11y ? "✓ 截屏服务已开启" : "✗ 截屏服务未开启");
+        sb.append(a11y ? "✓ 截屏服务已开启"
+                : (root ? "○ 截屏服务未开启（有 root，不需要它）" : "✗ 截屏服务未开启"));
+        if (!a11y && !root) {
+            sb.append("　← 请到「无障碍」里打开它");
+        }
         sb.append("　");
         sb.append(root ? "✓ root 已授权" : "✗ root 未授权");
         sb.append('\n');
 
         if (!hostAnswered) {
             sb.append("? 未连上蜜蜂记账（它没在运行，或模块未注入）");
+            statusView.setTextColor(Color.parseColor("#A32D2D"));
+        } else if (!a11y && !root) {
+            // 截屏服务没开是最要紧的问题，优先让它红着
+            sb.append("✓ 宿主 hook：").append(hookCount >= 0 ? hookCount + " 条" : "未知");
+            sb.append('\n');
+            sb.append(activityAlive ? "✓ 截图监听在位" : "✗ 截图监听不在位（先打开一次蜜蜂记账）");
             statusView.setTextColor(Color.parseColor("#A32D2D"));
         } else {
             if (hookCount >= 0) {
