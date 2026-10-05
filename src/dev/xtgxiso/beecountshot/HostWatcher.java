@@ -29,13 +29,11 @@ final class HostWatcher {
     private static volatile Context appCtx;
 
     /**
-     * 已经为哪一次放行处理过，避免重复。
+     * 去重与防误删全部交给 {@link HostVerdict}。
      *
-     * <p>这只是**快路径去重**（同一个放行时间戳不再走一遍完整判定），
-     * 真正的防误删判据在 {@link HostVerdict} 里——那边用的是"成功时间戳有没有被用过"，
-     * 比这里更严格，能挡住"隔几秒再点一次、拿上一次的成功删这一次的图"。
+     * <p>那里用的是"成功时间戳有没有被用过"+"放行了几张就要等几次成功"，
+     * 能同时挡住两种误删：拿上一次的成功删这一次的图，以及连点两次时把成功归错张。
      */
-    private static volatile long handledForAt = -1L;
 
     // ---------------- 诊断计数（会随广播回传给模块 App，便于排查） ----------------
     private static volatile int watchEvents = 0;
@@ -65,8 +63,8 @@ final class HostWatcher {
                         }
                         watchEvents++;
                         try {
-                            final long successTs = HostProbe.latestSuccessTs(
-                                    prefs.getString(Const.K_APP_LOGS, null));
+                            final String logsJson = prefs.getString(Const.K_APP_LOGS, null);
+                            final long successTs = HostProbe.latestSuccessTs(logsJson);
 
                             // 任何一次成功记账都顺手让桌面小组件刷新——不限于"走磁贴那一次"。
                             // 你在蜜蜂记账里手动记的账也能立刻反映到小组件上，不用等 30 分钟周期。
@@ -75,28 +73,29 @@ final class HostWatcher {
                                 pingWidget(appCtx);
                             }
 
-                            // 删不删由 HostVerdict 一家说了算（三条判据缺一不可）。
+                            // 删哪几张由 HostVerdict 一家说了算（按成功次数配对）。
                             // 判定必须在**起线程之前**同步做完：否则同一次成功可能被
-                            // 两条并行的回调各用一次，各删一张图。
-                            final String path = LastShot.path();
-                            if (!HostVerdict.shouldDelete(path, successTs)) {
+                            // 两条并行的回调各用一次。
+                            final String[] toDelete = HostVerdict.decide(successTs, logsJson);
+                            if (toDelete == null) {
                                 return;
                             }
-                            // 先占位再删：占位的那一刻起，同一次成功就不能再兑换第二张图了。
-                            HostVerdict.consume(path, successTs);
-                            handledForAt = LastShot.at();
                             Logx.i("[watch] success confirmed (ts=" + successTs
-                                    + ", allowedAt=" + LastShot.at() + ") path=" + path);
+                                    + ") -> deleting " + toDelete.length + " file(s)");
 
                             // 一定要放到子线程：首次确认 root 会弹授权框、可能阻塞十几秒，
                             // 而这里回调跑在主线程（插件 apply() 的线程），阻塞会 ANR。
                             final Context ctx2 = appCtx;
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    handleSuccess(ctx2, path, successTs);
-                                }
-                            }, "bee-host-delete").start();
+                            for (int i = 0; i < toDelete.length; i++) {
+                                final String path = toDelete[i];
+                                final long ts = successTs;
+                                new Thread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        handleSuccess(ctx2, path, ts);
+                                    }
+                                }, "bee-host-delete").start();
+                            }
                         } catch (Throwable t) {
                             Logx.e("[watch] onSharedPreferenceChanged failed", t);
                         }
@@ -120,12 +119,14 @@ final class HostWatcher {
             if (!safe) {
                 lastAction = "unsafe-path";
                 Logx.w("[watch] path failed safety check, not deleting: " + path);
+                HostVerdict.clearOne(path);
             } else if (HostRoot.ensure(ctx)) {
                 if (HostRoot.delete(path)) {
                     hostDeleteOk++;
                     lastAction = "host-deleted";
                     deletedPath = path;
                     deletedAt = System.currentTimeMillis();
+                    HostVerdict.clearOne(path);
                     HostTelemetry.put("deleted_path", path);
                     HostTelemetry.put("deleted_at", deletedAt);
                     scanGallery(ctx, path);
