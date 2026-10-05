@@ -34,7 +34,17 @@ public class ArmReceiver extends BroadcastReceiver {
             Logx.w("[arm] broadcast arrived but carries no valid deadline, ignored");
             return;
         }
-        Logx.i("[arm] broadcast received");
+        // 顺带把"是否允许推断着删"带进宿主进程——这个开关在模块 App 的设置里，
+        // 而删图判定在宿主进程，两边够不着对方的 SharedPreferences，只能搭广播的车。
+        // 正好每次截屏前都会发一次放行广播，所以总是最新的。
+        boolean precise = true;
+        try {
+            precise = intent.getBooleanExtra(Const.EXTRA_PRECISE, true);
+        } catch (Throwable ignored) {
+        }
+        HostVerdict.setPrecise(precise);
+
+        Logx.i("[arm] broadcast received (precise=" + precise + ")");
         ArmSignal.arm(until);
     }
 }
