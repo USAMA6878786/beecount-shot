@@ -32,9 +32,6 @@ final class HostProbe {
     /** 我们自己的遥测 prefs。 */
     private static final String TELEMETRY_PREFS = "beecount_shot";
 
-    /** "闸门最近放行过"的有效期。 */
-    private static final long GATE_RECENCY_MS = 10L * 60L * 1000L;
-
     /** 处理一条查询，并把答案广播回模块 App。 */
     static void handleQuery(Context ctx, Intent query) {
         String path = (query == null) ? null : query.getStringExtra(Const.EXTRA_PATH);
@@ -44,21 +41,25 @@ final class HostProbe {
 
             // 证据 A（主）：闸门刚刚把**这个文件**交给了蜜蜂记账。
             // 这是最直接的证据，不依赖蜜蜂记账自己写没写、写成什么格式。
-            boolean viaGate = LastShot.allowedMostRecently(path, GATE_RECENCY_MS);
+            boolean viaGate = LastShot.allowedMostRecently(path, HostVerdict.GATE_RECENCY_MS);
             // 证据 B（兜底）：蜜蜂记账自己的"已处理截图"列表里有这个文件。
             boolean viaList = processedContains(flutter, path);
             boolean processed = viaGate || viaList;
 
             long successTs = latestSuccessTs(flutter.getString(Const.K_APP_LOGS, null));
-
-            // 最终判定：成功必须发生在"这次放行"之后。
-            //
-            // 这一条是真机踩出来的：模块 App 侧原来只检查"成功时间晚于本次截图"，
-            // 结果一张**识别失败**（未识别到账单）的主页截图，因为前一次成功的时间
-            // 恰好落在这个宽松区间里，被误删了。所以判定必须绑定到"本次放行的时刻"，
-            // 而这个事实只有宿主有。
             long allowedAt = LastShot.at();
-            boolean success = viaGate && allowedAt > 0L && successTs > allowedAt - 2000L;
+
+            // 删不删只问 HostVerdict 一家。这里曾经自己算过一套判定，结果和宿主推送
+            // 路径那套对不上，是历史上误删的根源；现在两条路径共用同一份判据。
+            //
+            // 多算一条 alreadyDecided：宿主可能已经判定过这张图、但自己没删成功
+            // （比如没给蜜蜂记账 root），正等着模块 App 兜底，别让它再被判一次"不行"。
+            boolean decided = HostVerdict.alreadyDecided(path);
+            boolean success = decided || HostVerdict.shouldDelete(path, successTs);
+            if (success && !decided) {
+                // 模块 App 这次要自己动手删了，把这次成功占住，免得宿主再删一遍。
+                HostVerdict.consume(path, successTs);
+            }
 
             Intent result = new Intent(Const.ACTION_RESULT);
             result.setPackage(Const.MODULE_PKG);
@@ -179,6 +180,7 @@ final class HostProbe {
         sb.append("|gate_last_age_ms=").append(
                 LastShot.at() == 0L ? -1L : (System.currentTimeMillis() - LastShot.at()));
         sb.append('|').append(HostWatcher.diag());
+        sb.append('|').append(HostVerdict.diag());
 
         try {
             Set<String> set = flutter.getStringSet(Const.K_PROCESSED, null);
