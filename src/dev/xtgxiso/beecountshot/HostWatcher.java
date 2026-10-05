@@ -28,7 +28,13 @@ final class HostWatcher {
     private static volatile SharedPreferences.OnSharedPreferenceChangeListener listener;
     private static volatile Context appCtx;
 
-    /** 已经为哪一次放行处理过，避免重复。 */
+    /**
+     * 已经为哪一次放行处理过，避免重复。
+     *
+     * <p>这只是**快路径去重**（同一个放行时间戳不再走一遍完整判定），
+     * 真正的防误删判据在 {@link HostVerdict} 里——那边用的是"成功时间戳有没有被用过"，
+     * 比这里更严格，能挡住"隔几秒再点一次、拿上一次的成功删这一次的图"。
+     */
     private static volatile long handledForAt = -1L;
 
     // ---------------- 诊断计数（会随广播回传给模块 App，便于排查） ----------------
@@ -69,17 +75,18 @@ final class HostWatcher {
                                 pingWidget(appCtx);
                             }
 
-                            final long allowedAt = LastShot.at();
-                            if (allowedAt <= 0L || successTs <= allowedAt - 2000L) {
-                                return;
-                            }
-                            if (handledForAt == allowedAt) {
-                                return;
-                            }
-                            handledForAt = allowedAt;
+                            // 删不删由 HostVerdict 一家说了算（三条判据缺一不可）。
+                            // 判定必须在**起线程之前**同步做完：否则同一次成功可能被
+                            // 两条并行的回调各用一次，各删一张图。
                             final String path = LastShot.path();
+                            if (!HostVerdict.shouldDelete(path, successTs)) {
+                                return;
+                            }
+                            // 先占位再删：占位的那一刻起，同一次成功就不能再兑换第二张图了。
+                            HostVerdict.consume(path, successTs);
+                            handledForAt = LastShot.at();
                             Logx.i("[watch] success confirmed (ts=" + successTs
-                                    + ", allowedAt=" + allowedAt + ") path=" + path);
+                                    + ", allowedAt=" + LastShot.at() + ") path=" + path);
 
                             // 一定要放到子线程：首次确认 root 会弹授权框、可能阻塞十几秒，
                             // 而这里回调跑在主线程（插件 apply() 的线程），阻塞会 ANR。
@@ -195,7 +202,7 @@ final class HostWatcher {
      * <p>这条广播发的是模块 App **清单里声明**的 widget provider，所以即使它的进程已经
      * 被系统回收，也能被唤起来完成刷新——这比"等它自己轮询"可靠得多。
      */
-    static void pingWidget(Context ctx) {
+    static void pingWidget(final Context ctx) {
         try {
             Intent i = new Intent(Const.ACTION_WIDGET_PING);
             i.setPackage(Const.MODULE_PKG);
@@ -204,6 +211,30 @@ final class HostWatcher {
             Logx.i("[watch] widget refresh ping sent");
         } catch (Throwable t) {
             Logx.e("[watch] ping widget failed", t);
+        }
+
+        // 冗余通道：root 的 am broadcast。模块 App 退后台会被冻结，普通广播要等它解冻
+        // 才投得到；root 这条不受应用后台限制，还带 FLAG_RECEIVER_INCLUDE_BACKGROUND，
+        // 系统会直接投给后台接收器。幂等——多刷一次没有副作用。
+        // 必须在子线程：HostRoot.ensure 首次会弹授权框并阻塞。
+        try {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (HostRoot.ensure(ctx)) {
+                            HostRoot.broadcast(Const.ACTION_WIDGET_PING, Const.MODULE_PKG,
+                                    null, 0L,
+                                    Intent.FLAG_RECEIVER_FOREGROUND
+                                            | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
+                        }
+                    } catch (Throwable t) {
+                        Logx.w("[watch] root widget ping failed: " + t.getMessage());
+                    }
+                }
+            }, "bee-widget-ping-root").start();
+        } catch (Throwable t) {
+            Logx.w("[watch] root widget ping thread failed: " + t.getMessage());
         }
     }
 
