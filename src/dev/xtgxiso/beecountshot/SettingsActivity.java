@@ -149,6 +149,24 @@ public class SettingsActivity extends Activity {
         });
         root.addView(autoDelete);
 
+        CheckBox precise = new CheckBox(this);
+        precise.setText("连点多次时，区分「识别成功」和「未识别到账单」分别处理");
+        precise.setChecked(Prefs.precisePartial(this));
+        precise.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                Prefs.setPrecisePartial(SettingsActivity.this, isChecked);
+                Logx.i("[settings] precise-partial set to " + isChecked);
+            }
+        });
+        root.addView(precise);
+        body(root, "短时间内连点几次磁贴、其中有几张「未识别到账单」时：\n\n"
+                + "**打开**——按「先截的先出结果」推断，删掉成功的那几张，留下没识别的那张。"
+                + "这就是你要的精准删除，但它依赖蜜蜂记账**按先后顺序依次处理**截图；"
+                + "万一失败的是中间那张（比如第 2 张失败、第 3 张成功），就会删错。\n\n"
+                + "**关掉**——最保守：只要这一批里有一张没成功，整批都保留。"
+                + "想要「绝不误删」就关掉它。");
+
         // ---------------- 桌面小组件 ----------------
         heading(root, "桌面小组件");
         body(root, "一个小部件同时显示「今日 / 本周 / 本月支出」，白底，默认 2×1。\n"
