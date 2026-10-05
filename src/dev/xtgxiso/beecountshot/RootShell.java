@@ -94,6 +94,38 @@ public final class RootShell {
         return ok;
     }
 
+    /**
+     * 用 root 发一条广播（普通广播的**冗余通道**）。
+     *
+     * <p>为什么要多此一举：宿主退到后台可能被系统冻结，而发给缓存态应用的广播会被
+     * **延迟投递**——放行信号晚到就等于"这次不记账"，表现为点了磁贴没反应。
+     * root 的 {@code am broadcast} 走 shell 身份，不受应用自己的后台限制；
+     * 再加上 {@code FLAG_RECEIVER_INCLUDE_BACKGROUND}，系统会直接投给后台接收器，
+     * 不再排队等解冻。
+     *
+     * <p>幂等：放行信号本来就是"设一个截止时间"，收到两次取最大值，没有副作用。
+     *
+     * @param flags 传给 {@code am broadcast -f} 的 Intent flag，传 0 表示不加
+     */
+    public static boolean broadcast(String action, String pkg,
+                                    String longKey, long longValue, int flags) {
+        StringBuilder cmd = new StringBuilder("am broadcast -a ").append(action);
+        if (pkg != null && pkg.length() > 0) {
+            cmd.append(" -p ").append(pkg);
+        }
+        if (longKey != null && longKey.length() > 0) {
+            cmd.append(" --el ").append(longKey).append(' ').append(longValue);
+        }
+        if (flags != 0) {
+            cmd.append(" -f ").append(flags);
+        }
+        Result r = exec(cmd.toString(), 15000L);
+        boolean ok = r.exit == 0 && r.out != null && r.out.indexOf("Error") < 0;
+        Logx.i("[root] broadcast '" + cmd + "' -> " + (ok ? "sent" : "FAILED")
+                + " out=" + trim(r.out) + " err=" + trim(r.err));
+        return ok;
+    }
+
     /** 截屏自检用的"时间标记文件"，放在任何截图目录之外，免得把自己算进去。 */
     private static final String SHOT_MARK = "/data/local/tmp/bee_shot_mark";
 
