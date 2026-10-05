@@ -205,6 +205,25 @@ public final class Const {
     /** 记账成功的日志文案（取自 AutoBillingService.processScreenshot）。 */
     public static final String SUCCESS_LOG_MARKER = "自动记账成功";
 
+    /**
+     * 每处理完一张截图就会写一条的日志文案，成功失败都有。
+     *
+     * <p>这是**唯一能精确配对**的信号：真机日志显示它长这样——
+     * <pre>
+     *   AI 识别 + 落库完成 | Data: 耗时=6313ms, 成功=1 笔, 失败=0   ← 这张有账目
+     *   AI 识别 + 落库完成 | Data: 耗时=4020ms, 成功=0 笔, 失败=0   ← 这张未识别到账单
+     * </pre>
+     * 一条对应一张截图，按时间先后就能和"闸门放行的先后"一一对上，
+     * 不必再靠"先截的先出结果"去猜。
+     *
+     * <p>只取 {@code 落库完成} 四个字而不是整句，避免以后它改了措辞（比如换个耗时写法）
+     * 就整个失效。真失效了也只是退回次数推断，不会删错。
+     */
+    public static final String OUTCOME_LOG_MARKER = "落库完成";
+
+    /** 上面那条日志里表示"识别出几笔账"的字段名。 */
+    public static final String OUTCOME_BILLS_FIELD = "成功=";
+
     /** Dart 日志在 SharedPreferences 里的 key。 */
     public static final String K_APP_LOGS = "flutter.app_logs";
 
