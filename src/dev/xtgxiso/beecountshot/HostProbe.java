@@ -52,13 +52,21 @@ final class HostProbe {
             // 删不删只问 HostVerdict 一家。这里曾经自己算过一套判定，结果和宿主推送
             // 路径那套对不上，是历史上误删的根源；现在两条路径共用同一份判据。
             //
-            // 多算一条 alreadyDecided：宿主可能已经判定过这张图、但自己没删成功
-            // （比如没给蜜蜂记账 root），正等着模块 App 兜底，别让它再被判一次"不行"。
-            boolean decided = HostVerdict.alreadyDecided(path);
-            boolean success = decided || HostVerdict.shouldDelete(path, successTs);
-            if (success && !decided) {
-                // 模块 App 这次要自己动手删了，把这次成功占住，免得宿主再删一遍。
-                HostVerdict.consume(path, successTs);
+            // 两种情况算"可删"：
+            //   ① 宿主已经判定过这张图（可能自己没删成功，正等模块 App 兜底）；
+            //   ② 现在结算一次成功，这张图在结算结果里。
+            boolean success = HostVerdict.alreadyDecided(path);
+            if (!success) {
+                String[] batch = HostVerdict.decide(successTs,
+                        flutter.getString(Const.K_APP_LOGS, null));
+                if (batch != null) {
+                    for (int i = 0; i < batch.length; i++) {
+                        if (baseName(batch[i]).equals(baseName(path))) {
+                            success = true;
+                            break;
+                        }
+                    }
+                }
             }
 
             Intent result = new Intent(Const.ACTION_RESULT);
@@ -87,6 +95,41 @@ final class HostProbe {
         } catch (Throwable t) {
             Logx.e("[probe] handleQuery failed", t);
         }
+    }
+
+    /**
+     * 日志里 {@code afterTs} 之后一共出现过几次「自动记账成功」。
+     *
+     * <p>连点两次时，两张图都在"已交给蜜蜂记账、还不知道结果"的状态，而成功日志里
+     * **不带是哪张图**，单看时间戳分不清属于谁。数次数就能对上：
+     * 放行了几张、就等几次成功——次数够了说明这几张都成了，可以一起删；
+     * 次数不够说明至少有一张没成功，此时谁都不删（宁可漏删，绝不误删）。
+     */
+    static int countSuccessesAfter(String json, long afterTs) {
+        if (json == null || json.length() == 0) {
+            return 0;
+        }
+        int n = 0;
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String msg = o.optString("message", "");
+                if (msg.indexOf(Const.SUCCESS_LOG_MARKER) < 0) {
+                    continue;
+                }
+                long ts = o.optLong("timestamp", 0L);
+                if (ts > afterTs) {
+                    n++;
+                }
+            }
+        } catch (Throwable t) {
+            Logx.w("[probe] app_logs count failed: " + t.getMessage());
+        }
+        return n;
     }
 
     /** 该截图路径是否被蜜蜂记账处理过（按文件名比，兼容各种路径写法）。 */
