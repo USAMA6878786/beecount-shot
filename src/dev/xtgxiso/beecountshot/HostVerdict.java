@@ -26,9 +26,16 @@ import java.util.List;
  * <ul>
  *   <li>放行 1 张、等到 1 次成功 → 删这一张；</li>
  *   <li>放行 2 张、等到 2 次成功 → 两张都删；</li>
- *   <li>放行 2 张、只等到 1 次成功 → 说明有一张没成，但**不知道是哪张**，
- *       于是两张都保留（宁可漏删，绝不误删）。</li>
+ *   <li>放行 2 张、只等到 1 次成功 → 说明有一张没成。</li>
  * </ul>
+ *
+ * <p>最后那种情况在 v2.7 是"全部保留"，但用户实测发现太保守：连点三次、前两张成功、
+ * 第三张未识别，结果三张全留着。v2.8 加了 {@link #setPrecise} 开关，打开后按
+ * **"先放行的先出结果"** 推断——前面那几张是成功的，删掉；后面没等到成功的保留。
+ *
+ * <p><b>这个推断是有前提的</b>：它假定蜜蜂记账按上报先后依次处理截图。万一失败的是
+ * 中间那张（比如第 2 张失败、第 3 张成功），就会删错。所以它是个开关，默认开的理由是
+ * 用户明确要"删成功的、留没识别的"，关掉就回到最保守的"有失败就全留"。
  *
  * <p>另外保留「同一次成功不能兑换两次」的约束（{@code usedSuccessTs}），
  * 防止一条成功日志被两条路径各用一次。
@@ -54,6 +61,20 @@ final class HostVerdict {
     private static final List<String> pending = new ArrayList<String>(4);
 
     /**
+     * 是否允许"按处理顺序推断着删"。由模块 App 的设置在放行广播里带过来
+     * （两个进程够不着对方的 SharedPreferences）。
+     */
+    private static volatile boolean precise = true;
+
+    static void setPrecise(boolean v) {
+        precise = v;
+    }
+
+    static boolean isPrecise() {
+        return precise;
+    }
+
+    /**
      * 结算一次成功，返回这次可以删掉的文件（可能为 null = 还不能删）。
      *
      * @param successTs   蜜蜂记账日志里**最新一次**「自动记账成功」的时间戳（毫秒）
@@ -68,8 +89,10 @@ final class HostVerdict {
         }
 
         // 收集这一批"已放行、还不知道结果"的图：放行时间必须在本次成功之前，
-        // 且不能太老、也不能是已经结算过的。
+        // 且不能太老、也不能是已经结算过的。顺序是**放行先后**（老→新），
+        // 也就是蜜蜂记账拿到手的先后。
         List<String> batch = new ArrayList<String>(4);
+        List<Long> batchAt = new ArrayList<Long>(4);
         long earliest = Long.MAX_VALUE;
         int n = LastShot.size();
         for (int i = 0; i < n; i++) {
@@ -85,6 +108,7 @@ final class HostVerdict {
                 continue;
             }
             batch.add(p);
+            batchAt.add(Long.valueOf(at));
             if (at < earliest) {
                 earliest = at;
             }
@@ -93,20 +117,52 @@ final class HostVerdict {
             return null;
         }
 
-        int s = HostProbe.countSuccessesAfter(appLogsJson, earliest - SLACK_MS);
-        if (s < batch.size()) {
+        // 数这一批自己等来的成功次数。起点必须同时排除"已经兑换过的成功"，
+        // 否则上一张的成功会被重复算进来，把还没出结果的那张也一起删了。
+        long from = Math.max(earliest - SLACK_MS, usedSuccessTs);
+        int s = HostProbe.countSuccessesAfter(appLogsJson, from);
+
+        int delCount;
+        if (s >= batch.size()) {
+            delCount = batch.size(); // 全都成了
+        } else if (precise) {
+            // 只等到 s 次成功、但放行过更多张：按"先放行的先出结果"推断前 s 张成了。
+            delCount = s;
+            Logx.w("[verdict] infer: " + batch.size() + " handed over, only " + s
+                    + " success(es) -> assuming the FIRST " + s
+                    + " succeeded (relies on BeeCount processing them in order)");
+        } else {
             Logx.i("[verdict] wait: " + batch.size() + " screenshot(s) handed over, "
                     + s + " success(es) so far -> cannot tell which one, keeping all");
             return null;
         }
+        if (delCount <= 0) {
+            return null;
+        }
 
         usedSuccessTs = successTs;
-        resolvedUpToTs = successTs;
+        // 只把"删掉的这几张"标记为已结算，后面还没出结果的继续等——
+        // 不能拿 successTs 一刀切，否则会把后面那张也一起划走。
+        long maxAt = 0L;
+        for (int i = 0; i < delCount; i++) {
+            long at = batchAt.get(i).longValue();
+            if (at > maxAt) {
+                maxAt = at;
+            }
+        }
+        if (maxAt > resolvedUpToTs) {
+            resolvedUpToTs = maxAt;
+        }
+
+        List<String> del = new ArrayList<String>(delCount);
+        for (int i = 0; i < delCount; i++) {
+            del.add(batch.get(i));
+        }
         pending.clear();
-        pending.addAll(batch);
-        Logx.i("[verdict] DELETE " + batch.size() + " file(s) on "
-                + s + " success(es): " + batch);
-        return batch.toArray(new String[batch.size()]);
+        pending.addAll(del);
+        Logx.i("[verdict] DELETE " + delCount + " of " + batch.size() + " file(s) on "
+                + s + " success(es): " + del);
+        return del.toArray(new String[delCount]);
     }
 
     /**
