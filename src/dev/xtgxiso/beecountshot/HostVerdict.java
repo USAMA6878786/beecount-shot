@@ -37,7 +37,7 @@ import java.util.List;
  * 中间那张（比如第 2 张失败、第 3 张成功），就会删错。所以它是个开关，默认开的理由是
  * 用户明确要"删成功的、留没识别的"，关掉就回到最保守的"有失败就全留"。
  *
- * <p>另外保留「同一次成功不能兑换两次」的约束（{@code usedSuccessTs}），
+ * <p>另外保留「同一次成功不能兑换两次」的约束（{@code usedEventTs}），
  * 防止一条成功日志被两条路径各用一次。
  */
 final class HostVerdict {
@@ -52,7 +52,7 @@ final class HostVerdict {
     private static final long SLACK_MS = 1000L;
 
     /** 已经据此动作过的最新成功时间戳。 */
-    private static volatile long usedSuccessTs = 0L;
+    private static volatile long usedEventTs = 0L;
 
     /** 这个时刻之前的放行都已结算完毕，不再参与判定。 */
     private static volatile long resolvedUpToTs = 0L;
@@ -75,20 +75,28 @@ final class HostVerdict {
     }
 
     /**
-     * 结算一次成功，返回这次可以删掉的文件（可能为 null = 还不能删）。
+     * 结算一次结果，返回这次可以删掉的文件（可能为 null = 还不能删）。
      *
-     * @param successTs   蜜蜂记账日志里**最新一次**「自动记账成功」的时间戳（毫秒）
-     * @param appLogsJson 蜜蜂记账的 {@code flutter.app_logs} 原文（用来数成功次数）
+     * <p><b>首选精确配对</b>：蜜蜂记账每处理完一张截图就写一条
+     * {@link Const#OUTCOME_LOG_MARKER}，里面带 {@code 成功=N 笔}。
+     * 一条对应一张截图，按先后和"闸门放行的先后"一一对上，谁成功谁没识别一目了然，
+     * 可以做到"删成功的、留没识别的"，而且对 S/F/S/F 这种交替的情况也正确。
+     *
+     * <p>找不到这类日志（以后它改了措辞）就退回 v2.8 的次数推断。
+     *
+     * @param eventTs     触发这次结算的事件时间戳：有"落库完成"日志就用它的时间，
+     *                    否则退回「自动记账成功」的时间
+     * @param appLogsJson 蜜蜂记账的 {@code flutter.app_logs} 原文
      */
-    static synchronized String[] decide(long successTs, String appLogsJson) {
-        if (successTs <= 0L) {
+    static synchronized String[] decide(long eventTs, String appLogsJson) {
+        if (eventTs <= 0L) {
             return null;
         }
-        if (successTs <= usedSuccessTs) {
-            return null; // 这次成功已经兑换过了
+        if (eventTs <= usedEventTs) {
+            return null; // 这次事件已经结算过了
         }
 
-        // 收集这一批"已放行、还不知道结果"的图：放行时间必须在本次成功之前，
+        // 收集这一批"已放行、还不知道结果"的图：放行时间必须在本次事件之前，
         // 且不能太老、也不能是已经结算过的。顺序是**放行先后**（老→新），
         // 也就是蜜蜂记账拿到手的先后。
         List<String> batch = new ArrayList<String>(4);
@@ -98,10 +106,10 @@ final class HostVerdict {
         for (int i = 0; i < n; i++) {
             long at = LastShot.atAt(i);
             String p = LastShot.pathAt(i);
-            if (at <= resolvedUpToTs || at > successTs) {
+            if (at <= resolvedUpToTs || at > eventTs) {
                 continue;
             }
-            if (at < successTs - ALLOW_TTL_MS) {
+            if (at < eventTs - ALLOW_TTL_MS) {
                 continue;
             }
             if (p == null || !RootShell.isSafeScreenshotPath(p)) {
@@ -117,9 +125,18 @@ final class HostVerdict {
             return null;
         }
 
+        // ---- 精确配对：一条"落库完成"对应一张截图 ----
+        long outcomeFrom = Math.max(usedEventTs, earliest - SLACK_MS);
+        java.util.List<HostProbe.Outcome> outcomes =
+                HostProbe.outcomesAfter(appLogsJson, outcomeFrom);
+        if (!outcomes.isEmpty()) {
+            return pair(outcomes, batch, batchAt, eventTs);
+        }
+
+        // ---- 退回次数推断（找不到"落库完成"日志时才走这里）----
         // 数这一批自己等来的成功次数。起点必须同时排除"已经兑换过的成功"，
         // 否则上一张的成功会被重复算进来，把还没出结果的那张也一起删了。
-        long from = Math.max(earliest - SLACK_MS, usedSuccessTs);
+        long from = Math.max(earliest - SLACK_MS, usedEventTs);
         int s = HostProbe.countSuccessesAfter(appLogsJson, from);
 
         int delCount;
@@ -139,10 +156,81 @@ final class HostVerdict {
         if (delCount <= 0) {
             return null;
         }
+        return finish(batch, batchAt, delCount, eventTs,
+                "inferred " + s + " success(es)");
+    }
 
-        usedSuccessTs = successTs;
-        // 只把"删掉的这几张"标记为已结算，后面还没出结果的继续等——
-        // 不能拿 successTs 一刀切，否则会把后面那张也一起划走。
+    /**
+     * 精确配对：把"落库完成"事件按先后依次认领给按放行先后排好的截图。
+     *
+     * <p>一张截图只有在**拿到自己的结果**之后才会被处理：认到"有账目"就删，
+     * 认到"未识别"就保留并标记结算。没等到结果的那些继续等下一轮。
+     */
+    private static String[] pair(java.util.List<HostProbe.Outcome> outcomes,
+                                 List<String> batch, List<Long> batchAt, long eventTs) {
+        List<String> del = new ArrayList<String>(4);
+        int consumed = 0;      // 认领掉多少张（不论成功失败）
+        long lastOutcomeTs = 0L;
+        int oi = 0;
+        for (int i = 0; i < batch.size(); i++) {
+            long at = batchAt.get(i).longValue();
+            // 跳掉那些早于这张放行时间的事件（属于更老的截图）
+            while (oi < outcomes.size() && outcomes.get(oi).ts < at - SLACK_MS) {
+                oi++;
+            }
+            if (oi >= outcomes.size()) {
+                break; // 这张还没出结果，后面的更不会有 —— 到此为止
+            }
+            HostProbe.Outcome o = outcomes.get(oi);
+            oi++;
+            consumed++;
+            lastOutcomeTs = o.ts;
+            if (o.hasBill) {
+                Logx.i("[verdict] paired " + batch.get(i) + " -> 有账目，删");
+                del.add(batch.get(i));
+            } else {
+                Logx.i("[verdict] paired " + batch.get(i) + " -> 未识别到账单，保留");
+            }
+        }
+        if (consumed == 0) {
+            return null;
+        }
+
+        // 用掉的事件时间作为新的"已结算"水位，下次只认领更晚的事件。
+        if (lastOutcomeTs > usedEventTs) {
+            usedEventTs = lastOutcomeTs;
+        }
+        // 结算边界推进到**被认领的那几张**（含未识别的），没等到结果的继续等着。
+        long maxAt = 0L;
+        for (int i = 0; i < consumed; i++) {
+            long at = batchAt.get(i).longValue();
+            if (at > maxAt) {
+                maxAt = at;
+            }
+        }
+        if (maxAt > resolvedUpToTs) {
+            resolvedUpToTs = maxAt;
+        }
+
+        if (del.isEmpty()) {
+            Logx.i("[verdict] 这一批都未识别到账单，全部保留");
+            return null;
+        }
+        pending.clear();
+        pending.addAll(del);
+        Logx.i("[verdict] DELETE " + del.size() + " of " + batch.size()
+                + " file(s) (exact pairing): " + del);
+        return del.toArray(new String[del.size()]);
+    }
+
+    /** 收尾：记录已结算水位、标记待删清单。 */
+    private static String[] finish(List<String> batch, List<Long> batchAt,
+                                   int delCount, long eventTs, String why) {
+        if (eventTs > usedEventTs) {
+            usedEventTs = eventTs;
+        }
+        // 只把"处理掉的这几张"标记为已结算，后面还没出结果的继续等——
+        // 不能拿 eventTs 一刀切，否则会把后面那张也一起划走。
         long maxAt = 0L;
         for (int i = 0; i < delCount; i++) {
             long at = batchAt.get(i).longValue();
@@ -160,8 +248,8 @@ final class HostVerdict {
         }
         pending.clear();
         pending.addAll(del);
-        Logx.i("[verdict] DELETE " + delCount + " of " + batch.size() + " file(s) on "
-                + s + " success(es): " + del);
+        Logx.i("[verdict] DELETE " + delCount + " of " + batch.size()
+                + " file(s) (" + why + "): " + del);
         return del.toArray(new String[delCount]);
     }
 
@@ -201,7 +289,7 @@ final class HostVerdict {
 
     /** 诊断快照。 */
     static synchronized String diag() {
-        return "used_success_ts=" + usedSuccessTs
+        return "used_event_ts=" + usedEventTs
                 + "|resolved_up_to_ts=" + resolvedUpToTs
                 + "|pending=" + (pending.isEmpty() ? "<none>" : pending.toString());
     }
