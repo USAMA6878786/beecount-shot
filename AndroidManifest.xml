@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="dev.xtgxiso.beecountshot"
-    android:versionCode="15"
-    android:versionName="2.4">
+    package="dev.xtgxiso.beecountshot">
+
+    <!--
+        版本号不要写在这里。
+
+        aapt2 link 以 manifest 为准：写在这里会盖掉 build.sh 命令行传的版本号参数。
+        真踩过 —— v2.4 之后每个包打出来都还是 versionCode=15 / versionName=2.4，一直没变过。
+
+        唯一来源是 build.sh 顶部的 VERSION_NAME / VERSION_CODE 两行。
+    -->
 
     <uses-sdk
         android:minSdkVersion="26"
