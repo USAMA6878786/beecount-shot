@@ -94,6 +94,89 @@ public final class RootShell {
         return ok;
     }
 
+    /** 截屏自检用的"时间标记文件"，放在任何截图目录之外，免得把自己算进去。 */
+    private static final String SHOT_MARK = "/data/local/tmp/bee_shot_mark";
+
+    /**
+     * 候选截屏命令，按可靠性从高到低排，命中一条就停——**绝不连发**，否则会计两笔账。
+     *
+     * <p>三条路的取舍：
+     * <ol>
+     *   <li>{@code input keycombination KEYCODE_POWER KEYCODE_VOLUME_DOWN}——在输入层
+     *       模拟"电源键+音量下"，走的是<b>系统真实截图流程</b>：文件由系统命名、正常
+     *       登记进媒体库，蜜蜂记账的截图监听器照常触发，下游一条都不用改。</li>
+     *   <li>同样一条，但用数字键码。老一点的 input 只认数字
+     *       （26=电源，25=音量<b>下</b>，24 是音量上，别搞错）。</li>
+     *   <li>{@code input keyevent 120}（KEYCODE_SYSRQ）——部分 ROM 把 120 接到系统截图，
+     *       当作最后的尝试。</li>
+     * </ol>
+     *
+     * <p>为什么不用 {@code screencap}：它只是把一张图写到磁盘，媒体库里没有记录，
+     * 蜜蜂记账大概率感知不到。
+     */
+    private static final String[] SHOT_CMDS = new String[]{
+            "input keycombination KEYCODE_POWER KEYCODE_VOLUME_DOWN",
+            "input keycombination 26 25",
+            "input keyevent 120",
+    };
+
+    /**
+     * 用 root 触发系统截屏，并**当场验证图真的出来了**。
+     *
+     * <p>这是取代无障碍截屏的主路径，关键收益是**不再依赖无障碍服务**：Android 有个
+     * 安全机制，应用被覆盖安装后系统会自动关掉它的无障碍服务，以前每次更新模块
+     * 用户都会遇到"磁贴点了没反应"，根子就在这儿。
+     *
+     * <p>因为命令能不能截成功取决于 ROM，这里不猜：每发一条就轮询一次截图目录，
+     * 出来了才算数，不出来再换下一条。全部失败返回 false，让调用方退回无障碍。
+     */
+    public static boolean takeScreenshotViaRoot() {
+        // 先立标记（mtime = 现在），之后用 find -newer 判断有没有"比它新"的文件。
+        // 用 -newer 而不是 -newermt：前者是 POSIX 标准，toybox / busybox 都认，
+        // 后者只有 busybox/GNU 认，小米上是 toybox，用它会永远查不到东西。
+        exec("rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null", 5000L);
+
+        for (int i = 0; i < SHOT_CMDS.length; i++) {
+            Result r = exec(SHOT_CMDS[i] + " 2>&1", 10000L);
+            Logx.i("[root] shot cmd[" + i + "] '" + SHOT_CMDS[i] + "' -> exit=" + r.exit
+                    + " out=" + trim(r.out));
+            if (waitForScreenshot(2000L)) {
+                Logx.i("[root] screenshot landed via cmd[" + i + "]");
+                return true;
+            }
+            Logx.w("[root] cmd[" + i + "] produced no screenshot, trying next");
+        }
+        Logx.e("[root] all root screenshot methods failed");
+        return false;
+    }
+
+    /** 轮询等系统把截图写出来（含小米的 {@code .pending-} 临时文件，出现了就算数）。 */
+    private static boolean waitForScreenshot(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(400L);
+            } catch (InterruptedException e) {
+                return false;
+            }
+            if (newScreenshotSinceMark()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean newScreenshotSinceMark() {
+        // 除了各厂商的 Screenshots 目录，再兜上 Pictures / DCIM 两级：
+        // 万一 ROM 把图放到别处（或目录根本不存在），也不至于误判成"没截到"。
+        // 窗口只有两秒，这段时间里冒出来的新文件基本只可能是刚截的图。
+        String dirs = "/sdcard/Pictures/Screenshots /sdcard/DCIM/Screenshots"
+                + " /sdcard/Screenshots /sdcard/Pictures /sdcard/DCIM";
+        Result r = exec("find " + dirs + " -type f -newer " + SHOT_MARK
+                + " 2>/dev/null | head -3", 8000L);
+        return r.out != null && r.out.trim().length() > 0;
+    }
+
     /**
      * 把模块日志（tag = BeeShot）追加导出到 Download。
      *
