@@ -1,6 +1,7 @@
 package dev.xtgxiso.beecountshot;
 
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
@@ -82,20 +83,55 @@ public class ShotTileService extends TileService {
         }, "bee-tile-status").start();
     }
 
+    /**
+     * 更新磁贴外观。**可以从任意线程调**（内部会切到主线程再碰 Tile）。
+     *
+     * <p>顺手把副标题写进日志：这是"那一下点击到底有没有送到磁贴服务"最直接的凭据。
+     */
     private void applyTile(final String subtitle, final int state) {
+        final ShotTileService self = this;
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Tile tile = self.getQsTile();
+                    if (tile == null) {
+                        return;
+                    }
+                    tile.setState(state);
+                    tile.setLabel("记账截图");
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        tile.setSubtitle(subtitle);
+                    }
+                    tile.updateTile();
+                    Logx.i("[tile] subtitle -> " + subtitle);
+                } catch (Throwable t) {
+                    Logx.w("[tile] update tile failed: " + t.getMessage());
+                }
+            }
+        });
+    }
+
+    /**
+     * 请系统重新绑定磁贴并回调 {@link #onStartListening()}，副标题因此会立刻刷新成最新状态。
+     *
+     * <p>为什么需要它：Android 在应用被**覆盖安装**之后，磁贴往往会被"晾着"——图标还在面板上，
+     * 但绑定关系是旧的，表现出来就是"点了没反应"，过一阵子又自己好了。
+     * 主动请求一次重新监听，能让它早点恢复，也让用户下拉面板时看到的是最新状态。
+     *
+     * <p>额外好处：即使磁贴不重新绑定，{@code onStartListening} 里那次对宿主的查询也会跑一遍，
+     * 于是"蜜蜂记账截图监听不在位"这类问题会立刻显示在副标题上，而不是等用户点完才发现。
+     */
+    static void requestRefresh(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
         try {
-            Tile tile = getQsTile();
-            if (tile == null) {
-                return;
-            }
-            tile.setState(state);
-            tile.setLabel("记账截图");
-            if (Build.VERSION.SDK_INT >= 29) {
-                tile.setSubtitle(subtitle);
-            }
-            tile.updateTile();
+            TileService.requestListeningState(ctx,
+                    new ComponentName(ctx, ShotTileService.class));
+            Logx.i("[tile] asked the system to re-bind the tile");
         } catch (Throwable t) {
-            Logx.w("[tile] update tile failed: " + t.getMessage());
+            Logx.w("[tile] requestListeningState failed: " + t.getMessage());
         }
     }
 
@@ -105,6 +141,13 @@ public class ShotTileService extends TileService {
         final Context app = getApplicationContext();
         Logx.init(Prefs.appLogPath(app));
         Logx.i("[tile] ===== clicked =====");
+
+        // 立刻把"收到了"画在磁贴上。这一步专门用来把两种"点了没反应"区分开：
+        //   副标题变了     → 点击送到了磁贴服务，问题在后面的截屏/记账环节；
+        //   副标题纹丝不动 → 这一下压根没送到（应用刚覆盖安装完、磁贴还没重新绑定时会这样，
+        //                    属于系统层行为，不是模块逻辑）。
+        // 上一次"点了没反应"就是后一种：日志里连一条 clicked 都没有，无从下手。
+        applyTile("正在截屏…", Tile.STATE_ACTIVE);
 
         // 尽早把接收器注册好：宿主检测到记账成功时会主动广播把我们从冻结中唤醒，
         // 如果这时接收器还没注册，那条唤醒广播就丢了。
@@ -192,14 +235,24 @@ public class ShotTileService extends TileService {
                         boolean sent = RootShell.takeScreenshotViaRoot();
 
                         // root 三条命令都没截出图，才退回无障碍服务——双保险，谁成用谁。
+                        boolean viaA11y = false;
                         if (!sent) {
                             Logx.w("[tile] root screenshot produced nothing -> falling back to a11y");
                             if (ShotAccessibilityService.isReady()) {
                                 ShotAccessibilityService.scheduleShot(0);
+                                viaA11y = true;
                             } else {
                                 Logx.e("[tile] neither root nor a11y produced a screenshot;"
                                         + " see the [root] shot cmd[] lines above");
                             }
+                        }
+
+                        // 把结果写回磁贴副标题。这样"点了没反应"永远有一个看得见的落点：
+                        // 副标题停在"正在截屏…"说明流程中途断了，日志里对应位置会有报错。
+                        if (sent || viaA11y) {
+                            applyTile("已截屏 · 等蜜蜂记账处理", Tile.STATE_INACTIVE);
+                        } else {
+                            applyTile("截屏失败 · 请导出日志", Tile.STATE_UNAVAILABLE);
                         }
 
                         // 截屏之后等一会儿，把 logcat 快照落到 Download。
