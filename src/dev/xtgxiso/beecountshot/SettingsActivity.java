@@ -114,26 +114,49 @@ public class SettingsActivity extends Activity {
         // ---------------- 等待时长 ----------------
         heading(root, "等待时长");
         body(root, "点磁贴后先收起面板，再等这么久才截屏（等待从收起命令发出之后起算）。\n"
-                + "截到的图里还有控制中心就调大一档；觉得太慢就调小一档。");
-        RadioGroup group = new RadioGroup(this);
+                + "截到的图里还有控制中心就调大一档；觉得太慢就调小一档。\n\n"
+                + "150 / 300 毫秒是抢速度的档位，面板还没收干净时可能被拍进图里；"
+                + "600 毫秒留了一倍余量，比较稳。");
+        final RadioGroup group = new RadioGroup(this);
         group.setOrientation(RadioGroup.VERTICAL);
-        long saved = Prefs.delayMs(this);
+        final RadioButton[] buttons = new RadioButton[Prefs.DELAY_OPTIONS.length];
+        long saved = Prefs.snapToOption(Prefs.delayMs(this));
         for (int i = 0; i < Prefs.DELAY_OPTIONS.length; i++) {
             final long value = Prefs.DELAY_OPTIONS[i];
             RadioButton rb = new RadioButton(this);
+            // ⚠️ 必须在 setChecked() 之前就分配好 id，顺序不能反。
+            //
+            // RadioGroup 的"单选互斥"是靠它内部记着**当前选中项的 id** 来实现的：它会去
+            // 取消勾选"上一个登记的 id"。而在 addView() 里读 button.getId() 时，按钮
+            // 还没被加进组、id 还是 View.NO_ID(-1)，于是"进页面时已经勾选的那一档"
+            // 压根没被登记成当前选中项。结果就是：点别的档位时它不会被取消勾选，
+            // 出现两个档位同时被选中（实测：从 300ms 切走时，300 一直赖着不走）。
+            rb.setId(View.generateViewId());
             rb.setText(value + " 毫秒" + (value == Prefs.DEFAULT_DELAY_MS ? "（推荐）" : ""));
             rb.setChecked(value == saved);
-            rb.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
+            buttons[i] = rb;
+            group.addView(rb);
+        }
+        // 用组级监听而不是每个按钮的 onClick：这样键盘/无障碍导航切换档位也能存下来。
+        group.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(RadioGroup g, int checkedId) {
+                for (int i = 0; i < buttons.length; i++) {
+                    if (buttons[i].getId() != checkedId) continue;
+                    long value = Prefs.DELAY_OPTIONS[i];
+                    // 双保险：显式取消勾选同组其它按钮，不依赖 RadioGroup 的内部记账。
+                    for (RadioButton other : buttons) {
+                        if (other != null && other.getId() != checkedId) other.setChecked(false);
+                    }
+                    if (Prefs.delayMs(SettingsActivity.this) == value) return; // 值没变，不重复提示
                     Prefs.setDelayMs(SettingsActivity.this, value);
                     Logx.i("[settings] delay set to " + value + "ms");
                     Toast.makeText(SettingsActivity.this,
                             "已设为 " + value + " 毫秒", Toast.LENGTH_SHORT).show();
+                    return;
                 }
-            });
-            group.addView(rb);
-        }
+            }
+        });
         root.addView(group);
 
         // ---------------- 自动删截图 ----------------
