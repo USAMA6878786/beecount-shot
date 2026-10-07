@@ -335,6 +335,9 @@ final class HostProbe {
         // 判定依据本身的快照，方便一眼看出卡在哪
         sb.append("|verdict_gate=").append(viaGate);
         sb.append("|verdict_list=").append(viaList);
+        // 当前还有几张没兑现的通行证。点一次磁贴应当只 +1（哪怕发了两条广播），
+        // 这个数字是验证"一次点击 = 一张通行证"最直接的凭据。
+        sb.append("|arm_live=").append(ArmSignal.liveCount());
         sb.append("|activity_alive=").append(HostState.isActivityAlive());
         sb.append("|gate_last_path=").append(LastShot.path() == null ? "<none>" : LastShot.path());
         sb.append("|gate_last_age_ms=").append(
