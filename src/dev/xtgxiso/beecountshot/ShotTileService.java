@@ -17,21 +17,29 @@ import android.widget.Toast;
  * <p>点击后的完整时序（顺序不能换）：
  * <ol>
  *   <li><b>先放行</b>——必须早于截图，因为宿主是异步发现新截图的。
- *       有 root 走放行文件（主通道），同时补一条广播（备用）。</li>
- *   <li><b>收面板</b>——有 root 走 `cmd statusbar collapse`；没有则退回
- *       `startActivityAndCollapse` + 透明中转页。</li>
+ *       有 root 时走两条通道：应用侧定向广播 + root 的 {@code am broadcast} 冗余通道
+ *       （宿主退后台会被冻结，普通广播要等它解冻才投得到）。
+ *       两条都只是"登记一张限时通行证"，且宿主侧对相同的截止时间做了去重，
+ *       所以重复投递没有副作用。</li>
+ *   <li><b>收面板</b>——有 root 走 {@code cmd statusbar collapse}；没有则退回
+ *       {@code startActivityAndCollapse} + 透明中转页。</li>
  *   <li><b>再等一会儿</b>——等待时长是**从收起命令发出之后**起算的，这样无论 su 开销多大，
  *       截图时面板都已经收干净了。</li>
- *   <li><b>截屏</b>——交给无障碍服务执行系统级截屏。</li>
+ *   <li><b>截屏</b>——主路径是 root 模拟"电源键+音量下"（系统真实截图流程）；
+ *       root 三条命令都没截出图，才退回无障碍服务。</li>
  * </ol>
  *
- * <p>v1.1 相对 v1.0 的变化，全部来自真机反馈：
+ * <p>历史沿革（真机反馈驱动）：
  * <ul>
- *   <li>v1.0 用 `startActivityAndCollapse` 收面板，实测在部分 ROM 上完全不生效，
+ *   <li>最初用 {@code startActivityAndCollapse} 收面板，实测在部分 ROM 上完全不生效，
  *       结果是截到的图里带着控制中心。改用 root 的 shell 命令。</li>
- *   <li>v1.0 的延迟是从"点击磁贴"起算，su / 启动 Activity 的开销会吃掉这段延迟，
- *       所以"截图太快"。改成从收起命令发出后起算。</li>
- *   <li>v1.0 只用广播送放行信号，任一环节断了就静默失败。现在加了不问任何环节的放行文件。</li>
+ *   <li>最初的延迟是从"点击磁贴"起算，su / 启动 Activity 的开销会吃掉这段延迟，
+ *       于是"截图太快"。改成从收起命令发出后起算。</li>
+ *   <li>中间版本用过"模块 App 用 root 往宿主目录写一个放行文件"，
+ *       实测 {@code su} 跑在全局挂载命名空间、看不到应用数据目录，那条路是静默失效的，
+ *       已彻底移除。现在只认广播（见 {@link ArmSignal}）。</li>
+ *   <li>截屏原先依赖无障碍服务，但**应用被覆盖安装后系统会自动关掉它**，
+ *       于是每次更新模块都会遇到"点了没反应"。改成 root 为主、无障碍为退路。</li>
  * </ul>
  */
 public class ShotTileService extends TileService {
