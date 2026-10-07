@@ -17,7 +17,12 @@ import android.os.Process;
  *
  * <p>而"应用写自己的 SharedPreferences"是 Android 上最不可能失败的持久化路径：它就是
  * 应用自己的正常存储机制，不涉及跨 uid、不涉及权限、不涉及分区存储。所以这里把宿主侧
- * 的关键状态全部写进 {@code beecount_shot.xml}，模块 App 再用 root 把它读出来。
+ * 的关键状态全部写进 {@code beecount_shot.xml}。
+ *
+ * <p><b>回传方式是广播，不是文件。</b>（这里曾经写着"模块 App 再用 root 把它读出来"，
+ * 是错的：{@code su} 在全局挂载命名空间，根本看不到应用的数据目录，见 {@link HostInfo}。
+ * 全工程没有任何一处用 root 去读宿主的 prefs。）真正的出口是
+ * {@link HostProbe} 在应答查询时把这份数据拼成字符串随广播带走。
  *
  * <p>这份数据同时解决两个问题：
  * <ol>
