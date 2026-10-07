@@ -61,6 +61,15 @@ final class HostVerdict {
     private static final List<String> pending = new ArrayList<String>(4);
 
     /**
+     * 待删清单的保留上限。
+     *
+     * <p>v2.12 之前这里是每轮 {@code clear()} 再重建的，于是模块 App 只要晚一轮来问
+     * "这张判定过没有"，就会得到"没有"——而那时宿主其实已经判定过了。
+     * 现在改成**追加保留**（带个上限，满了从最老的开始丢），跨轮次也能查得到。
+     */
+    private static final int PENDING_CAP = 16;
+
+    /**
      * 是否允许"按处理顺序推断着删"。由模块 App 的设置在放行广播里带过来
      * （两个进程够不着对方的 SharedPreferences）。
      */
@@ -216,8 +225,7 @@ final class HostVerdict {
             Logx.i("[verdict] 这一批都未识别到账单，全部保留");
             return null;
         }
-        pending.clear();
-        pending.addAll(del);
+        rememberPending(del);
         Logx.i("[verdict] DELETE " + del.size() + " of " + batch.size()
                 + " file(s) (exact pairing): " + del);
         return del.toArray(new String[del.size()]);
@@ -246,11 +254,34 @@ final class HostVerdict {
         for (int i = 0; i < delCount; i++) {
             del.add(batch.get(i));
         }
-        pending.clear();
-        pending.addAll(del);
+        rememberPending(del);
         Logx.i("[verdict] DELETE " + delCount + " of " + batch.size()
                 + " file(s) (" + why + "): " + del);
         return del.toArray(new String[delCount]);
+    }
+
+    /** 把这一批待删文件记进去（累加，不覆盖），超出上限从最老的开始丢。 */
+    private static void rememberPending(List<String> del) {
+        for (int i = 0; i < del.size(); i++) {
+            String p = del.get(i);
+            if (p == null || p.length() == 0) {
+                continue;
+            }
+            String want = baseName(p);
+            boolean dup = false;
+            for (int j = 0; j < pending.size(); j++) {
+                if (want.equals(baseName(pending.get(j)))) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) {
+                pending.add(p);
+            }
+        }
+        while (pending.size() > PENDING_CAP) {
+            pending.remove(0);
+        }
     }
 
     /**
