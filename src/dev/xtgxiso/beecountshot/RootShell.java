@@ -103,7 +103,8 @@ public final class RootShell {
      * 再加上 {@code FLAG_RECEIVER_INCLUDE_BACKGROUND}，系统会直接投给后台接收器，
      * 不再排队等解冻。
      *
-     * <p>幂等：放行信号本来就是"设一个截止时间"，收到两次取最大值，没有副作用。
+     * <p>重复投递没有副作用：放行信号那边 {@code ArmSignal.arm()} 对相同的截止时间做了去重
+     * （两条通道发的是同一个值），小组件刷新那边多刷一次也只是多读一次库。
      *
      * @param extras 直接拼在命令后面的 extra 段，例如 {@code "--el until_ms 123 --ez precise true"}；
      *               没有就传 null
