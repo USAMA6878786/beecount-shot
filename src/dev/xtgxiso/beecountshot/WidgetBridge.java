@@ -48,6 +48,9 @@ final class WidgetBridge {
                                 || !Const.ACTION_WIDGET_RESULT.equals(intent.getAction())) {
                             return;
                         }
+                        if (!SenderGuard.allow(this, context)) {
+                            return;
+                        }
                         Data d = new Data();
                         d.received = true;
                         d.ok = intent.getBooleanExtra(Const.EXTRA_OK, false);
