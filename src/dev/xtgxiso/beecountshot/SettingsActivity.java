@@ -48,6 +48,8 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 设置页用 NoActionBar 主题（见 AndroidManifest），所以这个标题**不会**显示在界面上，
+        // 它只影响"最近任务"里那张卡片的名字。版本号改写在状态行的最后一行。
         setTitle("记账截图 · v" + versionName());
         Logx.init(Prefs.appLogPath(this));
         Logx.i("[settings] opened, module " + versionName());
@@ -58,6 +60,17 @@ public class SettingsActivity extends Activity {
         int pad = dp(20);
         root.setPadding(pad, pad, pad, pad);
         scroll.addView(root);
+
+        // 别把正文画到系统栏底下。
+        //
+        // Android 15（API 35）起，targetSdk 35 的应用被**强制"边到边"**显示：内容会一直
+        // 画到状态栏、导航栏下面。本模块 targetSdk 就是 35，所以在较新的系统上，正文第一行
+        // 会被顶到状态栏/标题栏后面，看起来就像"被横幅盖住了"。
+        //
+        // setFitsSystemWindows(true) 让这层视图自动把系统栏的高度让出来（补成内边距）。
+        // 在还没强制边到边的老系统上，系统本来就已经让好了位置、剩余 inset 是 0，这行无副作用。
+        scroll.setFitsSystemWindows(true);
+
         setContentView(scroll);
 
         // ---------------- 状态 ----------------
@@ -369,6 +382,8 @@ public class SettingsActivity extends Activity {
         }
         sb.append('\n').append("宿主包名：").append(HostInfo.pkgResolved()
                 ? HostInfo.pkg() : "探测中…");
+        // 版本号挂在最后一行：标题栏去掉了，不写在这里就再也看不到自己装的是哪一版。
+        sb.append("　·　模块 v").append(versionName());
         statusView.setText(sb.toString());
     }
 
