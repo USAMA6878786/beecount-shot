@@ -111,28 +111,12 @@ final class HostProbe {
      * 次数不够说明至少有一张没成功，此时谁都不删（宁可漏删，绝不误删）。
      */
     static int countSuccessesAfter(String json, long afterTs) {
-        if (json == null || json.length() == 0) {
-            return 0;
-        }
+        Parsed p = parse(json);
         int n = 0;
-        try {
-            JSONArray arr = new JSONArray(json);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.optJSONObject(i);
-                if (o == null) {
-                    continue;
-                }
-                String msg = o.optString("message", "");
-                if (msg.indexOf(Const.SUCCESS_LOG_MARKER) < 0) {
-                    continue;
-                }
-                long ts = o.optLong("timestamp", 0L);
-                if (ts > afterTs) {
-                    n++;
-                }
+        for (int i = 0; i < p.successTs.size(); i++) {
+            if (p.successTs.get(i).longValue() > afterTs) {
+                n++;
             }
-        } catch (Throwable t) {
-            Logx.w("[probe] app_logs count failed: " + t.getMessage());
         }
         return n;
     }
@@ -148,6 +132,86 @@ final class HostProbe {
         }
     }
 
+    /** 一份解析好的 Dart 日志快照（只留判定要用的东西，体积很小）。 */
+    static final class Parsed {
+        final int len;
+        final int hash;
+        long latestSuccessTs = 0L;
+        long latestOutcomeTs = 0L;
+        /** 每一条「自动记账成功」的时间戳。 */
+        final java.util.List<Long> successTs = new java.util.ArrayList<Long>();
+        /** 每一条「落库完成」事件，按时间升序。 */
+        final java.util.List<Outcome> outcomes = new java.util.ArrayList<Outcome>();
+
+        Parsed(int len, int hash) {
+            this.len = len;
+            this.hash = hash;
+        }
+    }
+
+    private static final Parsed EMPTY = new Parsed(0, 0);
+
+    /** 最近一次解析的结果。 */
+    private static volatile Parsed cache;
+
+    /**
+     * 把整份 Dart 日志解析成一份小快照，**带缓存**。
+     *
+     * <p>为什么要缓存：一次"日志变了"的事件里，宿主会连着问好几个问题——最近一次成功是什么时候、
+     * 最近一次落库是什么时候、这之后成功了几次、落库事件都有哪些——原先每个问题都各自把整份
+     * JSON 从头解析一遍。而蜜蜂记账这份日志实测有 130KB 左右，等于一条日志变化就要解析四五遍。
+     * 缓存之后同一份内容只解析一次，后面全部走内存里的小列表。
+     *
+     * <p>用「长度 + hashCode」当键：{@code String.hashCode()} 只算一次并被缓存，
+     * 比重新解析 JSON 便宜得多。（缓存只留一份，两个线程交替查询时最多退化回原来的开销。）
+     */
+    static Parsed parse(String json) {
+        if (json == null || json.length() == 0) {
+            return EMPTY;
+        }
+        int len = json.length();
+        int hash = json.hashCode();
+        Parsed hit = cache;
+        if (hit != null && hit.len == len && hit.hash == hash) {
+            return hit;
+        }
+        Parsed p = new Parsed(len, hash);
+        try {
+            JSONArray arr = new JSONArray(json);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String msg = o.optString("message", "");
+                long ts = o.optLong("timestamp", 0L);
+                if (msg.indexOf(Const.SUCCESS_LOG_MARKER) >= 0) {
+                    p.successTs.add(Long.valueOf(ts));
+                    if (ts > p.latestSuccessTs) {
+                        p.latestSuccessTs = ts;
+                    }
+                }
+                if (msg.indexOf(Const.OUTCOME_LOG_MARKER) >= 0) {
+                    p.outcomes.add(new Outcome(ts, parseBills(msg) > 0));
+                    if (ts > p.latestOutcomeTs) {
+                        p.latestOutcomeTs = ts;
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Logx.w("[probe] app_logs parse failed: " + t.getMessage());
+        }
+        // 数组顺序理论上就是时间顺序，排一下更稳妥。
+        java.util.Collections.sort(p.outcomes, new java.util.Comparator<Outcome>() {
+            @Override
+            public int compare(Outcome a, Outcome b) {
+                return a.ts < b.ts ? -1 : (a.ts > b.ts ? 1 : 0);
+            }
+        });
+        cache = p;
+        return p;
+    }
+
     /**
      * 列出 {@code afterTs} 之后所有的"处理完一张截图"事件，按时间先后。
      *
@@ -157,44 +221,20 @@ final class HostProbe {
      * 于是"放行的先后顺序"和"出结果的先后顺序"可以一一对上，不用再猜。
      */
     static java.util.List<Outcome> outcomesAfter(String json, long afterTs) {
+        Parsed p = parse(json);
         java.util.List<Outcome> out = new java.util.ArrayList<Outcome>();
-        if (json == null || json.length() == 0) {
-            return out;
-        }
-        try {
-            JSONArray arr = new JSONArray(json);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.optJSONObject(i);
-                if (o == null) {
-                    continue;
-                }
-                String msg = o.optString("message", "");
-                if (msg.indexOf(Const.OUTCOME_LOG_MARKER) < 0) {
-                    continue;
-                }
-                long ts = o.optLong("timestamp", 0L);
-                if (ts <= afterTs) {
-                    continue;
-                }
-                out.add(new Outcome(ts, parseBills(msg) > 0));
+        for (int i = 0; i < p.outcomes.size(); i++) {
+            Outcome o = p.outcomes.get(i);
+            if (o.ts > afterTs) {
+                out.add(o);
             }
-        } catch (Throwable t) {
-            Logx.w("[probe] app_logs outcomes parse failed: " + t.getMessage());
         }
-        // 数组顺序理论上就是时间顺序，排一下更稳妥。
-        java.util.Collections.sort(out, new java.util.Comparator<Outcome>() {
-            @Override
-            public int compare(Outcome a, Outcome b) {
-                return a.ts < b.ts ? -1 : (a.ts > b.ts ? 1 : 0);
-            }
-        });
         return out;
     }
 
     /** 最新一条"处理完"事件的时间戳；一条都没有则 0。 */
     static long latestOutcomeTs(String json) {
-        java.util.List<Outcome> all = outcomesAfter(json, 0L);
-        return all.isEmpty() ? 0L : all.get(all.size() - 1).ts;
+        return parse(json).latestOutcomeTs;
     }
 
     /** 从 {@code 成功=N 笔} 里抠出 N。解析不出来按 0（= 没识别到账单）处理，方向是安全的。 */
@@ -249,22 +289,35 @@ final class HostProbe {
         }
     }
 
-    /** 该截图路径是否被蜜蜂记账处理过（按文件名比，兼容各种路径写法）。 */
+    /**
+     * 该截图路径是否被蜜蜂记账处理过（按文件名比，兼容各种路径写法）。
+     *
+     * <p><b>必须用 {@code getAll()} 取值。</b>真机日志里长期有一行
+     * {@code proc_set_error=java.lang.String cannot be cast to java.util.Set}——
+     * 蜜蜂记账这个键实际存的是**一个 String**，而旧代码假设它是 {@code Set<String>}，
+     * 于是 {@code getStringSet()} 每次都抛 ClassCastException 被吞掉，
+     * 这条兜底判据（证据 B）实际上从来没生效过。现在两种类型都认。
+     */
     private static boolean processedContains(SharedPreferences flutter, String path) {
         String base = baseName(path);
         if (base.length() == 0) {
             return false;
         }
         try {
-            Set<String> set = flutter.getStringSet(Const.K_PROCESSED, null);
-            if (set == null) {
+            Object raw = flutter.getAll().get(Const.K_PROCESSED);
+            if (raw == null) {
                 return false;
             }
-            for (String s : set) {
-                if (base.equals(baseName(s))) {
-                    return true;
+            if (raw instanceof Set) {
+                for (Object o : (Set<?>) raw) {
+                    if (o != null && base.equals(baseName(String.valueOf(o)))) {
+                        return true;
+                    }
                 }
+                return false;
             }
+            // 实际是 String（可能是一段 JSON/逗号分隔的文本）——直接按子串找文件名。
+            return String.valueOf(raw).indexOf(base) >= 0;
         } catch (Throwable t) {
             Logx.w("[probe] processed list unreadable: " + t.getMessage());
         }
@@ -273,30 +326,7 @@ final class HostProbe {
 
     /** 从 Dart 日志里找出最近一次「自动记账成功」的时间戳，没有则 0。 */
     static long latestSuccessTs(String json) {
-        if (json == null || json.length() == 0) {
-            return 0L;
-        }
-        long best = 0L;
-        try {
-            JSONArray arr = new JSONArray(json);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.optJSONObject(i);
-                if (o == null) {
-                    continue;
-                }
-                String msg = o.optString("message", "");
-                if (msg.indexOf(Const.SUCCESS_LOG_MARKER) < 0) {
-                    continue;
-                }
-                long ts = o.optLong("timestamp", 0L);
-                if (ts > best) {
-                    best = ts;
-                }
-            }
-        } catch (Throwable t) {
-            Logx.w("[probe] app_logs parse failed: " + t.getMessage());
-        }
-        return best;
+        return parse(json).latestSuccessTs;
     }
 
     /**
@@ -345,18 +375,26 @@ final class HostProbe {
         sb.append('|').append(HostWatcher.diag());
         sb.append('|').append(HostVerdict.diag());
 
+        // 同 processedContains：这个键实际是 String 而不是 Set，用 getAll() 取才不会抛。
         try {
-            Set<String> set = flutter.getStringSet(Const.K_PROCESSED, null);
-            sb.append("|proc_set_size=").append(set == null ? -1 : set.size());
-            if (set != null) {
+            Object raw = flutter.getAll().get(Const.K_PROCESSED);
+            sb.append("|proc_kind=").append(raw == null ? "<none>" : raw.getClass().getSimpleName());
+            if (raw instanceof Set) {
+                Set<?> set = (Set<?>) raw;
+                sb.append("|proc_set_size=").append(set.size());
                 StringBuilder sample = new StringBuilder();
-                Iterator<String> it = set.iterator();
+                Iterator<?> it = set.iterator();
                 int n = 0;
                 while (it.hasNext() && n < 3) {
-                    sample.append(baseName(it.next())).append(';');
+                    sample.append(baseName(String.valueOf(it.next()))).append(';');
                     n++;
                 }
                 sb.append("|proc_sample=").append(sample);
+            } else if (raw != null) {
+                String s = String.valueOf(raw);
+                sb.append("|proc_raw_len=").append(s.length());
+                sb.append("|proc_raw_tail=").append(
+                        s.length() > 200 ? s.substring(s.length() - 200) : s);
             }
         } catch (Throwable t) {
             sb.append("|proc_set_error=").append(t.getMessage());
