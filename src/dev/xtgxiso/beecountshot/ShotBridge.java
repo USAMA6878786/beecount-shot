@@ -79,6 +79,11 @@ final class ShotBridge {
                         if (intent == null || !Const.ACTION_RESULT.equals(intent.getAction())) {
                             return;
                         }
+                        // 这条回包里带着"可以删哪个文件"的结论，是权限最大的一条通道。
+                        // 校验策略见 SenderGuard：只在确认识别出发件人是陌生应用时才拒。
+                        if (!SenderGuard.allow(this, context)) {
+                            return;
+                        }
                         Answer a = new Answer();
                         a.received = true;
                         a.decisive = intent.getBooleanExtra(Const.EXTRA_DECISIVE, false);
