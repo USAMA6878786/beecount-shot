@@ -24,6 +24,11 @@ public class ArmReceiver extends BroadcastReceiver {
         if (!Const.ACTION_ARM.equals(intent.getAction())) {
             return;
         }
+        // 放行信号是全模块最敏感的入口：伪造它等于把"按需截图"临时变回"所有截图都记账"。
+        // 校验策略见 SenderGuard —— 只在"确认识别出是陌生应用"时才拒，任何不确定都放行。
+        if (!SenderGuard.allow(this, context)) {
+            return;
+        }
         long until;
         try {
             until = intent.getLongExtra(Const.EXTRA_UNTIL, 0L);
