@@ -62,54 +62,21 @@ final class HostWatcher {
                             return;
                         }
                         watchEvents++;
-                        try {
-                            final String logsJson = prefs.getString(Const.K_APP_LOGS, null);
-                            final long successTs = HostProbe.latestSuccessTs(logsJson);
-
-                            // 触发结算的"事件钟"：优先用「落库完成」（成功失败都有），
-                            // 没有才退回「自动记账成功」。
-                            //
-                            // 这一步很关键：只看成功时间戳的话，**识别失败那次根本不会
-                            // 触发结算**，于是那张图永远没人去"确认它没识别到"，
-                            // 后面的配对就会整体错位。
-                            long eventTs = HostProbe.latestOutcomeTs(logsJson);
-                            if (eventTs <= 0L) {
-                                eventTs = successTs;
+                        // 这个回调**一定**跑在宿主主线程上：AOSP 的 SharedPreferencesImpl
+                        // 在 notifyListeners() 里会先判断当前线程，不是主线程就 post 回主线程。
+                        // （不管 apply() 是从哪个线程调的。）
+                        //
+                        // 而下面要做的是"解析整份 Dart 日志 + 判定"，几十毫秒起步，
+                        // 又发生在蜜蜂记账自己正忙着写日志的时候。所以整段丢到子线程，
+                        // 别占它的主线程。判定仍然是 synchronized + usedEventTs 去重的，
+                        // 连续丢几次线程也不会把同一次事件结算两遍。
+                        final SharedPreferences p = prefs;
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                settle(p);
                             }
-
-                            // 任何一次成功记账都顺手让桌面小组件刷新——不限于"走磁贴那一次"。
-                            // 你在蜜蜂记账里手动记的账也能立刻反映到小组件上，不用等 30 分钟周期。
-                            if (successTs > 0L && successTs != lastPingedTs) {
-                                lastPingedTs = successTs;
-                                pingWidget(appCtx);
-                            }
-
-                            // 删哪几张由 HostVerdict 一家说了算。
-                            // 判定必须在**起线程之前**同步做完：否则同一次事件可能被
-                            // 两条并行的回调各用一次。
-                            final String[] toDelete = HostVerdict.decide(eventTs, logsJson);
-                            if (toDelete == null) {
-                                return;
-                            }
-                            Logx.i("[watch] settled (eventTs=" + eventTs
-                                    + ") -> deleting " + toDelete.length + " file(s)");
-
-                            // 一定要放到子线程：首次确认 root 会弹授权框、可能阻塞十几秒，
-                            // 而这里回调跑在主线程（插件 apply() 的线程），阻塞会 ANR。
-                            final Context ctx2 = appCtx;
-                            for (int i = 0; i < toDelete.length; i++) {
-                                final String path = toDelete[i];
-                                final long ts = successTs;
-                                new Thread(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        handleSuccess(ctx2, path, ts);
-                                    }
-                                }, "bee-host-delete").start();
-                            }
-                        } catch (Throwable t) {
-                            Logx.e("[watch] onSharedPreferenceChanged failed", t);
-                        }
+                        }, "bee-host-settle").start();
                     }
                 };
                 sp.registerOnSharedPreferenceChangeListener(listener);
@@ -118,6 +85,60 @@ final class HostWatcher {
             } catch (Throwable t) {
                 Logx.e("[watch] start failed", t);
             }
+        }
+    }
+
+    /**
+     * 一次"日志变了"的完整结算：解析日志 → 让 {@link HostVerdict} 判定 → 删该删的。
+     *
+     * <p>整段都在子线程跑（由回调丢过来），不占宿主主线程。
+     */
+    private static void settle(SharedPreferences prefs) {
+        try {
+            final String logsJson = prefs.getString(Const.K_APP_LOGS, null);
+            final long successTs = HostProbe.latestSuccessTs(logsJson);
+
+            // 触发结算的"事件钟"：优先用「落库完成」（成功失败都有），
+            // 没有才退回「自动记账成功」。
+            //
+            // 这一步很关键：只看成功时间戳的话，**识别失败那次根本不会触发结算**，
+            // 于是那张图永远没人去"确认它没识别到"，后面的配对就会整体错位。
+            long eventTs = HostProbe.latestOutcomeTs(logsJson);
+            if (eventTs <= 0L) {
+                eventTs = successTs;
+            }
+
+            // 任何一次成功记账都顺手让桌面小组件刷新——不限于"走磁贴那一次"。
+            // 你在蜜蜂记账里手动记的账也能立刻反映到小组件上，不用等 30 分钟周期。
+            if (successTs > 0L && successTs != lastPingedTs) {
+                lastPingedTs = successTs;
+                pingWidget(appCtx);
+            }
+
+            // 删哪几张由 HostVerdict 一家说了算。它自己是 synchronized 的，
+            // 而且用"这个事件时间戳还没被用过"做闸门，所以并发进来也只会结算一次。
+            final String[] toDelete = HostVerdict.decide(eventTs, logsJson);
+            if (toDelete == null) {
+                return;
+            }
+            Logx.i("[watch] settled (eventTs=" + eventTs
+                    + ") -> deleting " + toDelete.length + " file(s)");
+
+            // 每张图各起一个线程：首次确认 root 会弹授权框、可能阻塞十几秒，
+            // 串行会互相拖累（第一张卡住后面全等）。
+            final Context ctx2 = appCtx;
+            final long ts = successTs;
+            for (int i = 0; i < toDelete.length; i++) {
+                final String path = toDelete[i];
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleSuccess(ctx2, path, ts);
+                    }
+                }, "bee-host-delete").start();
+            }
+        } catch (Throwable t) {
+            Logx.e("[watch] settle failed", t);
         }
     }
 
