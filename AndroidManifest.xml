@@ -34,11 +34,21 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault.Light">
 
+        <!--
+            用 NoActionBar 主题：顶上那条标题栏（"记账截图 · vX.Y"）纯属多余，
+            而且在新系统上还会压住设置页正文的第一行。
+
+            为什么会被压住：Android 15（targetSdk 35）起对应用**强制"边到边"**显示，
+            内容会一直画到状态栏底下；标题栏占着顶部那块地方，正文第一行就藏在它后面。
+            光去掉标题栏还不够，正文自己还要把系统栏的高度让出来——见 SettingsActivity
+            里的 setFitsSystemWindows(true)。
+        -->
         <activity
             android:name=".SettingsActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
