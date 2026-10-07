@@ -33,6 +33,17 @@ public final class Logx {
     /** 单文件上限，超过就截断重来，避免无限增长。 */
     private static final long MAX_BYTES = 512L * 1024L;
 
+    /**
+     * 运行期每写这么多字节才去 stat 一次文件大小。
+     *
+     * <p>原先只在 {@link #init} 里查一次上限，而宿主进程可能一连开好几天，
+     * 中间照样能涨到任意大。现在补上运行期检查（stat 很便宜，但没必要每行都做）。
+     */
+    private static final long CHECK_EVERY_BYTES = 256L * 1024L;
+
+    /** 距上次体积检查已经写了多少字节。 */
+    private static long writtenSinceCheck = 0L;
+
     private static final Object LOCK = new Object();
     private static final SimpleDateFormat TS =
             new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US);
@@ -164,8 +175,14 @@ public final class Logx {
         synchronized (LOCK) {
             FileOutputStream fos = null;
             try {
+                byte[] bytes = sb.toString().getBytes("UTF-8");
+                writtenSinceCheck += bytes.length;
+                if (writtenSinceCheck >= CHECK_EVERY_BYTES) {
+                    writtenSinceCheck = 0L;
+                    maybeRotate(path);
+                }
                 fos = new FileOutputStream(path, true);
-                fos.write(sb.toString().getBytes("UTF-8"));
+                fos.write(bytes);
                 fos.flush();
             } catch (Throwable x) {
                 disabled = true;
@@ -178,6 +195,17 @@ public final class Logx {
                     }
                 }
             }
+        }
+    }
+
+    /** 文件涨过上限就删掉重来（下一次 open 会新建）。运行期调用，不需要精确。 */
+    private static void maybeRotate(String path) {
+        try {
+            File f = new File(path);
+            if (f.length() > MAX_BYTES && f.delete()) {
+                Log.i(Const.TAG, "[log] rotated: file exceeded " + MAX_BYTES + " bytes");
+            }
+        } catch (Throwable ignored) {
         }
     }
 
