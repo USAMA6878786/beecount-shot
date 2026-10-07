@@ -66,26 +66,42 @@ final class HostBridge {
                 Logx.e("[bridge] log re-init failed", t);
             }
 
+            // 接收器注册留在当前线程（很轻，而且必须尽早，否则第一条广播会丢）。
             registerArmReceiver(app);
             registerQueryReceiver(app);
             registerWidgetQueryReceiver(app);
 
-            // 宿主主动推送：盯成功日志，一出现就由宿主自己删（模块 App 会被系统冻结，靠不住）。
-            HostWatcher.start(app);
-
-            // 盯住数据库文件的变动：在蜜蜂记账里增删改一笔账，小组件也要跟着更新。
-            DbWatcher.start(app);
-
-            // 提前确认/申请一次 root：删除公共存储里的文件需要它。
-            // 放在这里（应用启动时）是为了让授权弹窗出现在可预期的时刻，
-            // 而不是在"刚记完账"的中间突然弹出来。拒绝也不会重复弹。
+            // 下面几件事都要碰磁盘，不能在主线程做。
+            //
+            // 这个 attach() 是从宿主的 Application.onCreate 里调进来的，
+            // 也就是**挡在蜜蜂记账自己的启动路径上**——之前 HostWatcher.start() 会在这里
+            // 同步加载 FlutterSharedPreferences（蜜蜂记账那份 Flutter 偏好，可能不小），
+            // 属于白白拖慢它自己的冷启动。现在整组丢到子线程。
             final Context appRef = app;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    HostRoot.ensure(appRef);
+                    try {
+                        // 宿主主动推送：盯成功日志，一出现就由宿主自己删
+                        // （模块 App 会被系统冻结，靠不住）。
+                        HostWatcher.start(appRef);
+
+                        // 盯住数据库文件的变动：在蜜蜂记账里增删改一笔账，小组件也要跟着更新。
+                        DbWatcher.start(appRef);
+                    } catch (Throwable t) {
+                        Logx.e("[bridge] background init failed", t);
+                    }
+
+                    // 提前确认/申请一次 root：删除公共存储里的文件需要它。
+                    // 放在启动时是为了让授权弹窗出现在可预期的时刻，
+                    // 而不是在"刚记完账"的中间突然弹出来。拒绝也不会重复弹。
+                    try {
+                        HostRoot.ensure(appRef);
+                    } catch (Throwable t) {
+                        Logx.e("[bridge] host root probe failed", t);
+                    }
                 }
-            }, "bee-host-root").start();
+            }, "bee-host-init").start();
         }
     }
 
@@ -100,7 +116,7 @@ final class HostBridge {
             } else {
                 app.registerReceiver(receiver, filter);
             }
-            Logx.i("[bridge] arm receiver (backup channel) registered");
+            Logx.i("[bridge] arm receiver registered (the only pass channel)");
         } catch (Throwable t) {
             Logx.e("[bridge] register arm receiver failed", t);
         }
@@ -118,7 +134,20 @@ final class HostBridge {
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    HostProbe.handleQuery(context, intent);
+                    if (!SenderGuard.allow(this, context)) {
+                        return;
+                    }
+                    // 解析整份 Dart 日志是好几十毫秒的活，不能在宿主主线程上做。
+                    // 判定本身是 synchronized + usedEventTs 去重的，挪到子线程不会重复结算。
+                    final Context c = context.getApplicationContext() != null
+                            ? context.getApplicationContext() : context;
+                    final Intent q = intent;
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            HostProbe.handleQuery(c, q);
+                        }
+                    }, "bee-host-query").start();
                 }
             };
             if (Build.VERSION.SDK_INT >= 33) {
@@ -143,6 +172,9 @@ final class HostBridge {
             BroadcastReceiver receiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
+                    if (!SenderGuard.allow(this, context)) {
+                        return;
+                    }
                     final Context c = context.getApplicationContext() != null
                             ? context.getApplicationContext() : context;
                     final int count = (intent == null) ? 0
