@@ -71,6 +71,14 @@ public class ExpenseWidgetProvider extends AppWidgetProvider {
             return;
         }
         String action = intent.getAction();
+        // 只对"我们自己定义的那两个 action"做发件人校验。
+        // APPWIDGET_UPDATE 等系统广播一律原样放行，免得校验出岔子把小组件弄成不刷新。
+        // 校验只拒"确认识别出是陌生应用"的，任何不确定都放行（见 SenderGuard）。
+        if (action != null
+                && (ACTION_REFRESH.equals(action) || Const.ACTION_WIDGET_PING.equals(action))
+                && !SenderGuard.allow(this, context)) {
+            return;
+        }
         if (ACTION_REFRESH.equals(action)) {
             Logx.i("[widget] tapped -> refresh + open records");
             // 点一下做两件事：后台刷新数字，并打开记账记录明细页
