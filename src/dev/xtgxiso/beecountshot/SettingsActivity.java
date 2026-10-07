@@ -67,6 +67,11 @@ public class SettingsActivity extends Activity {
         root.addView(statusView);
         refreshStatus();
 
+        // 顺手请系统重新绑定一次磁贴。原因：应用被覆盖安装后磁贴常被"晾着"，
+        // 图标还在、点了没反应，过一阵子又自己好——主动请求一次能让它早点恢复，
+        // 也让副标题立刻刷新成最新状态。（打开设置页是个很自然的时机。）
+        ShotTileService.requestRefresh(this);
+
         // ---------------- 使用前提 ----------------
         heading(root, "使用前提");
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
@@ -459,6 +464,9 @@ public class SettingsActivity extends Activity {
                 });
             }
         }, "bee-restart-host").start();
+
+        // 重启宿主之后磁贴的状态也要跟着重算一次（副标题里带着"截图监听是否在位"）。
+        ShotTileService.requestRefresh(this);
     }
 
     private void exportLogs() {
