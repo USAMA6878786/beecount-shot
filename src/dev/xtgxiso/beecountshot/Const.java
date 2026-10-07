@@ -157,9 +157,6 @@ public final class Const {
     /** logcat 导出到 Download 后的路径。 */
     public static final String LOGCAT_PATH = "/sdcard/Download/" + LOG_DIR + "/logcat.txt";
 
-    /** 放行信号文件名（历史遗留：文件通道已废弃，见 ArmSignal 的说明）。 */
-    public static final String ARM_FILE_NAME = "beecount_shot_arm";
-
     /** 宿主日志文件名。 */
     public static final String HOST_LOG_NAME = "beecount_shot_host.log";
 
