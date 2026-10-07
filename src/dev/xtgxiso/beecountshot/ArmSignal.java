@@ -1,24 +1,37 @@
 package dev.xtgxiso.beecountshot;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 宿主进程（蜜蜂记账）里的"这一次要记账"标记。
  *
  * <p>语义是「限时通行证」：模块 App 点磁贴时通过**定向广播**送来一张通行证的截止时间，
  * 闸门每次判断只看 {@code now < 某张通行证的截止}。
  *
- * <p><b>v2.7 改成多张并存（额度制），这是真机踩出来的：</b>原来只有一份窗口、
- * 且 {@code consume()} 一次性清零。而蜜蜂记账上报一张截图要**延迟约 10 秒**
- * （真机日志：截图 11:26:54 落盘，11:27:04 才上报）。于是连点两次磁贴时：
+ * <p>用时间窗口而不是永久开关，是为了让状态一定会自动失效——万一某次通行证没被兑现，
+ * 也不会把模块永久卡在"什么都放行"的状态上。
  *
- * <pre>
- *   点击① → 发通行证（到 +15s）
- *   点击② → 发通行证（到 +22s），arm() 取最大值 → 仍然只有一份
- *   截图 A 上报 → consume() 清零
- *   截图 B 上报 → 窗口已是 0 → 被拦掉，第二张永远不会被记账
- * </pre>
+ * <h3>v2.7：为什么从"一个窗口"改成"多张并存"</h3>
+ * 原来只有一份窗口、且 {@code consume()} 一次性清零。而蜜蜂记账上报一张截图要**延迟约 10 秒**
+ * （真机日志：截图 11:26:54 落盘，11:27:04 才上报）。于是连点两次时，第一张上报会把两张的
+ * 额度一起吃掉，第二张永远被拦。改成每次点击发一张独立通行证、各带自己的到期时间。
  *
- * 现在每次点击发一张**独立**的通行证，各自带自己的到期时间，互不顶替；
- * 兑现时优先用**最快过期**的那张（先点先兑现），过期的自动作废。
+ * <h3>v2.12：修掉"一次点击吃两个额度"和"连点第 4 次挤掉第 1 次"</h3>
+ * 查出两个洞，都是"额度数量"上的问题：
+ *
+ * <ol>
+ *   <li><b>同一次点击被登记两次。</b>{@code ShotTileService} 对同一次点击会发**两条** ARM 广播
+ *       ——应用侧的普通广播，加一条 root 冗余通道（宿主退后台被冻结时，普通广播会被延迟投递，
+ *       所以加了 root 这条）。两条都会被 {@link ArmReceiver} 收到，于是 {@code arm()} 被调两次、
+ *       一次点击占掉两个额度。现在 {@code arm()} 对**相同的截止时间做去重**：
+ *       重复投递只会登记一张。"两条通道一起发没有副作用"这句话到此才真正成立。</li>
+ *   <li><b>固定 3 格 + 满格就挤掉最早的。</b>原来是定长数组，满了以后挤掉"最快过期的那张"；
+ *       而所有通行证的时长是一样的（{@code clickAt + delay + 宽限}），
+ *       "最快过期"恒等于"最早点击"——于是连点到第 4 次就会把第 1 次的通行证顶掉，
+ *       第 1 张截图被闸门拦下、不记账。现在改成按到期时间排的列表，
+ *       容量只受"过期清理"约束（外加一个远高于实际的防滥用上限），突发连点不会再互相挤掉。</li>
+ * </ol>
  *
  * <p>为什么只用内存 + 广播，不再走文件：
  * <ul>
@@ -28,53 +41,65 @@ package dev.xtgxiso.beecountshot;
  *   <li>广播这条通道从一开始就是通的，也是唯一真正在生效的。</li>
  * </ul>
  * 所以文件通道已彻底移除，只保留内存窗口。这样"日志说的"和"实际生效的"才一致。
- *
- * <p>用时间窗口而不是永久开关，是为了让状态一定会自动失效——万一某次通行证没被兑现，
- * 也不会把模块永久卡在"什么都放行"的状态上。
  */
 final class ArmSignal {
 
-    /** 同时最多存在几张通行证。够覆盖"连点几次"的场景，又不至于放得太开。 */
-    private static final int SLOTS = 3;
+    /**
+     * 同时最多保留多少张通行证。
+     *
+     * <p>纯属防滥用兜底：正常使用下任意时刻的通行证都只有个位数（每张只活二十来秒）。
+     * 真正的容量约束是"过期即清理"，不是这个数字。
+     */
+    private static final int MAX_PASSES = 16;
 
-    private static final long[] armedUntil = new long[SLOTS];
+    /**
+     * 单张通行证的有效期上限。
+     *
+     * <p>实际下发的窗口最长约 21 秒（延迟 1.3s + 宽限 14s + 收尾 6s）。钳到一分钟是为了
+     * 防止一条伪造的"远期截止时间"把闸门永久打开——即使真有异常值，也只多开一小会儿。
+     */
+    private static final long MAX_PASS_LIFETIME_MS = 60000L;
 
     /** 兑现时对同一张图去重的时间范围（见 {@link #consume(String)}）。 */
     private static final long DEDUPE_MS = 10000L;
 
-    /** 广播送达时发一张通行证。 */
+    /** 未过期的通行证的截止时间（毫秒），无序，只在读的时候挑最早的那张。 */
+    private static final List<Long> passes = new ArrayList<Long>(4);
+
+    /** 广播送达时发一张通行证。重复投递同一个截止时间只会登记一张。 */
     static synchronized void arm(long untilMs) {
         long now = System.currentTimeMillis();
-        int free = -1;
-        for (int i = 0; i < SLOTS; i++) {
-            if (armedUntil[i] <= now) {
-                free = i;
-                break;
-            }
+        prune(now);
+
+        // 超过上限就钳一下（正常路径永远碰不到），避免伪造值把窗口开太久。
+        long until = Math.min(untilMs, now + MAX_PASS_LIFETIME_MS);
+        if (until <= now) {
+            Logx.w("[arm] pass rejected: deadline already in the past (+" + (until - now) + "ms)");
+            return;
         }
-        if (free < 0) {
-            // 全满：挤掉最快过期的那张（它本来也快没用了）。
-            int soonest = 0;
-            for (int i = 1; i < SLOTS; i++) {
-                if (armedUntil[i] < armedUntil[soonest]) {
-                    soonest = i;
-                }
-            }
-            free = soonest;
+
+        // 去重：同一次点击会经由两条通道各送一次，截止时间完全相同。
+        if (passes.contains(Long.valueOf(until))) {
+            Logx.i("[arm] duplicate pass ignored (+" + (until - now)
+                    + "ms), live=" + passes.size());
+            return;
         }
-        armedUntil[free] = untilMs;
-        Logx.i("[arm] pass#" + free + " granted (+"
-                + Math.max(0L, untilMs - now) + "ms)");
+
+        if (passes.size() >= MAX_PASSES) {
+            int soonest = soonestIndex();
+            long dropped = passes.remove(soonest).longValue();
+            Logx.w("[arm] too many live passes (" + (passes.size() + 1)
+                    + "), dropping the soonest one (+" + (dropped - now) + "ms)");
+        }
+
+        passes.add(Long.valueOf(until));
+        Logx.i("[arm] pass granted (+" + (until - now) + "ms), live=" + passes.size());
     }
 
+    /** 现在是否有可用的通行证。 */
     static synchronized boolean isArmed() {
-        long now = System.currentTimeMillis();
-        for (int i = 0; i < SLOTS; i++) {
-            if (armedUntil[i] > now) {
-                return true;
-            }
-        }
-        return false;
+        prune(System.currentTimeMillis());
+        return !passes.isEmpty();
     }
 
     /**
@@ -87,7 +112,7 @@ final class ArmSignal {
      * 以前"放行即清零"顺带起到了这个作用，改成额度制后必须显式补上，否则一次重复上报
      * 会白吃掉后面那张的额度。
      *
-     * <p>兑现时挑**最快过期**的那张：先点的先兑现，保证两张通行证各归各的。
+     * <p>兑现时挑**最快过期**的那张：先点的先兑现，保证每次点击的通行证各归各的。
      */
     static synchronized boolean consume(String path) {
         if (path != null && LastShot.allowedRecently(path, DEDUPE_MS)) {
@@ -96,18 +121,40 @@ final class ArmSignal {
             return false;
         }
         long now = System.currentTimeMillis();
-        int pick = -1;
-        for (int i = 0; i < SLOTS; i++) {
-            if (armedUntil[i] > now && (pick < 0 || armedUntil[i] < armedUntil[pick])) {
-                pick = i;
-            }
-        }
-        if (pick < 0) {
+        prune(now);
+        if (passes.isEmpty()) {
             return false;
         }
-        armedUntil[pick] = 0L;
-        Logx.i("[arm] pass#" + pick + " consumed");
+        int pick = soonestIndex();
+        long picked = passes.remove(pick).longValue();
+        Logx.i("[arm] pass consumed (+" + (picked - now) + "ms), live=" + passes.size());
         return true;
+    }
+
+    /** 当前可用通行证张数（诊断用）。 */
+    static synchronized int liveCount() {
+        prune(System.currentTimeMillis());
+        return passes.size();
+    }
+
+    /** 清掉已过期的通行证。所有入口都先过一遍，容量就自然只受"实际未兑现的点击次数"约束。 */
+    private static void prune(long now) {
+        for (int i = passes.size() - 1; i >= 0; i--) {
+            if (passes.get(i).longValue() <= now) {
+                passes.remove(i);
+            }
+        }
+    }
+
+    /** 最快过期的那张的下标；空列表时返回 -1。 */
+    private static int soonestIndex() {
+        int best = -1;
+        for (int i = 0; i < passes.size(); i++) {
+            if (best < 0 || passes.get(i).longValue() < passes.get(best).longValue()) {
+                best = i;
+            }
+        }
+        return best;
     }
 
     private ArmSignal() {
