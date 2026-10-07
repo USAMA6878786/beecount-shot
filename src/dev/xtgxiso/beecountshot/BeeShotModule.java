@@ -53,7 +53,14 @@ import io.github.libxposed.api.XposedModuleInterface;
  */
 public class BeeShotModule extends XposedModule {
 
-    private static final String VERSION_TAG = "v1.3";
+    /**
+     * 日志里打的版本号。
+     *
+     * <p>由 {@code build.sh} 在构建时生成的 {@code BuildInfo} 提供——之前这里写死成 "v1.3"，
+     * 一直没跟着模块版本走，排查问题时看日志会被带偏。现在改成构建期注入，
+     * 版本号只有一个来源（build.sh 顶部的 VERSION_NAME）。
+     */
+    private static final String VERSION_TAG = "v" + BuildInfo.VERSION_NAME;
 
     private final List<XposedInterface.HookHandle> handles =
             new ArrayList<XposedInterface.HookHandle>();
