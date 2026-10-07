@@ -59,6 +59,10 @@ final class ShotCleaner {
                     Logx.w("[clean] 蜜蜂记账的截图监听不在位（MainActivity 已被回收）"
                             + " -> 本次很可能不会被记入");
                     toast(ctx, "蜜蜂记账的截图监听未就绪，本次可能不会被记入（先打开一次它即可）");
+                    // 让磁贴的副标题也立刻变成"未就绪"——Toast 在部分系统上会被悄悄丢掉，
+                    // 而磁贴就在用户手指底下，比 Toast 可靠。requestListeningState 会触发
+                    // onStartListening，那里会重新查一次宿主状态并刷新副标题。
+                    ShotTileService.requestRefresh(ctx);
                 } else {
                     Logx.i("[clean] 蜜蜂记账截图监听在位，正常");
                 }
