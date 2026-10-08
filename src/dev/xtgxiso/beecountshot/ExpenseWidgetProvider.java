@@ -52,6 +52,16 @@ public class ExpenseWidgetProvider extends AppWidgetProvider {
         if (ids == null) {
             return;
         }
+        // 借这个"每 30 分钟一次"的周期更新当钩子，请系统重新绑定一次控制中心磁贴。
+        //
+        // 原因：Android 在应用被**覆盖安装**之后经常把磁贴"晾着"——图标还在面板上，
+        // 但绑定关系是旧的，点了没反应，过一阵子又自己好。这里是一个天然的定时点，
+        // 成本只有一次 requestListeningState（磁贴会重新读到宿主的最新状态）。
+        try {
+            ShotTileService.requestRefresh(context);
+        } catch (Throwable t) {
+            Logx.w("[widget] tile refresh request failed: " + t.getMessage());
+        }
         for (int i = 0; i < ids.length; i++) {
             render(context, manager, ids[i], manager.getAppWidgetOptions(ids[i]), true);
         }
