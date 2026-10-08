@@ -84,6 +84,38 @@ public final class RootShell {
         return r;
     }
 
+    /**
+     * 把「补发放行广播」和「收起控制中心」合并成**一次 su**。
+     *
+     * <p>为什么要合并：`su -c` 每调用一次就是起一个新进程，实测一次 150~250ms。
+     * 原来这两件事各起一次 su，白白多花两百毫秒——而这段时间是算在"点击到截屏"之间的，
+     * 用户能直接感觉到。两条命令本来就没有依赖关系（广播是发给宿主进程的，
+     * 收面板是给 SystemUI 的），放进同一个 shell 顺序执行即可。
+     *
+     * <p>返回值里的 {@code exit} 是 {@code cmd statusbar collapse} 的结果，
+     * 调用方据此判断要不要退回非 root 方案（和原来一致）。
+     */
+    public static Result armAndCollapse(String action, String pkg, String extras, int flags) {
+        StringBuilder cmd = new StringBuilder("am broadcast -a ").append(action);
+        if (pkg != null && pkg.length() > 0) {
+            cmd.append(" -p ").append(pkg);
+        }
+        if (extras != null && extras.length() > 0) {
+            cmd.append(' ').append(extras);
+        }
+        if (flags != 0) {
+            cmd.append(" -f ").append(flags);
+        }
+        // 广播的输出保留下来（合并成一次 su 之后仍然要能看出它到底发出去没有）
+        cmd.append(" 2>&1; ");
+        cmd.append("cmd statusbar collapse; C=$?; echo COLLAPSE_EXIT=$C; exit $C");
+
+        Result r = exec(cmd.toString(), 15000L);
+        Logx.i("[root] arm+collapse -> exit=" + r.exit
+                + " out=" + trim(r.out) + " err=" + trim(r.err));
+        return r;
+    }
+
     /** 强制停止宿主（改完模块配置后必须重启它，hook 才生效）。 */
     public static boolean forceStopHost() {
         String pkg = HostInfo.pkg();
@@ -174,31 +206,53 @@ public final class RootShell {
      * 出来了才算数，不出来再换下一条。全部失败返回 false，让调用方退回无障碍。
      */
     public static boolean takeScreenshotViaRoot() {
-        // 先立标记（mtime = 现在），之后用 find -newer 判断有没有"比它新"的文件。
-        // 用 -newer 而不是 -newermt：前者是 POSIX 标准，toybox / busybox 都认，
-        // 后者只有 busybox/GNU 认，小米上是 toybox，用它会永远查不到东西。
-        exec("rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null", 5000L);
-
         for (int i = 0; i < SHOT_CMDS.length; i++) {
-            Result r = exec(SHOT_CMDS[i] + " 2>&1", 10000L);
+            // 第一条命令顺带把"时间标记"立起来——两条命令合成**一次 su**。
+            // su 是起一个新进程，每次约 150~250ms，能省就省。
+            //
+            // 后面的命令**不重立标记**，这一点很重要：所有候选命令共用同一个标记，
+            // 万一某条命令其实截到了图、只是我们没在 2 秒内发现，下一轮仍然能把它认出来，
+            // 不会因为标记被刷新而误判成"没截到"，然后再多截一张。
+            //
+            // 标记的立法是 rm + touch，之后用 `find -newer` 判断有没有"比它新"的文件。
+            // 用 -newer 而不是 -newermt：前者是 POSIX 标准，toybox / busybox 都认，
+            // 后者只有 busybox/GNU 认，小米上是 toybox，用它会永远查不到东西。
+            String cmd = (i == 0)
+                    ? "rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null; "
+                            + SHOT_CMDS[0] + " 2>&1"
+                    : SHOT_CMDS[i] + " 2>&1";
+
+            long t0 = System.currentTimeMillis();
+            Result r = exec(cmd, 10000L);
             Logx.i("[root] shot cmd[" + i + "] '" + SHOT_CMDS[i] + "' -> exit=" + r.exit
-                    + " out=" + trim(r.out));
+                    + " out=" + trim(r.out)
+                    + " (su 用了 " + (System.currentTimeMillis() - t0) + "ms)");
+
+            long t1 = System.currentTimeMillis();
             if (waitForScreenshot(2000L)) {
-                Logx.i("[root] screenshot landed via cmd[" + i + "]");
+                Logx.i("[root] screenshot landed via cmd[" + i + "] —— 发命令到确认出图 "
+                        + (System.currentTimeMillis() - t1) + "ms，本轮共 "
+                        + (System.currentTimeMillis() - t0) + "ms");
                 return true;
             }
-            Logx.w("[root] cmd[" + i + "] produced no screenshot, trying next");
+            Logx.w("[root] cmd[" + i + "] produced no screenshot（等了 "
+                    + (System.currentTimeMillis() - t1) + "ms）, trying next");
         }
         Logx.e("[root] all root screenshot methods failed");
         return false;
     }
 
-    /** 轮询等系统把截图写出来（含小米的 {@code .pending-} 临时文件，出现了就算数）。 */
+    /**
+     * 轮询等系统把截图写出来（含小米的 {@code .pending-} 临时文件，出现了就算数）。
+     *
+     * <p>从 400ms 缩到 250ms：每轮要起一个 su 去跑 find，慢是慢在这上面；
+     * 缩短间隔能更早发现出图，而单次 find 现在也便宜了（见 {@link #newScreenshotSinceMark()}）。
+     */
     private static boolean waitForScreenshot(long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
-                Thread.sleep(400L);
+                Thread.sleep(250L);
             } catch (InterruptedException e) {
                 return false;
             }
@@ -213,9 +267,15 @@ public final class RootShell {
         // 除了各厂商的 Screenshots 目录，再兜上 Pictures / DCIM 两级：
         // 万一 ROM 把图放到别处（或目录根本不存在），也不至于误判成"没截到"。
         // 窗口只有两秒，这段时间里冒出来的新文件基本只可能是刚截的图。
+        //
+        // 必须带 -maxdepth 1：不带的话 find 会**递归**扫下去，而 /sdcard/DCIM 底下通常还有
+        // Camera、微信、各种 App 的目录，几千个文件扫下来一次就要几百毫秒——而这个 find
+        // 每 250ms 跑一次、正是用来判断"图出来了没有"的，慢在这里就等于整个流程慢。
+        // 截图从来不会落在子目录里（小米就是 /sdcard/DCIM/Screenshots/，属于本层），
+        // 所以深度 1 足够。
         String dirs = "/sdcard/Pictures/Screenshots /sdcard/DCIM/Screenshots"
                 + " /sdcard/Screenshots /sdcard/Pictures /sdcard/DCIM";
-        Result r = exec("find " + dirs + " -type f -newer " + SHOT_MARK
+        Result r = exec("find " + dirs + " -maxdepth 1 -type f -newer " + SHOT_MARK
                 + " 2>/dev/null | head -3", 8000L);
         return r.out != null && r.out.trim().length() > 0;
     }
