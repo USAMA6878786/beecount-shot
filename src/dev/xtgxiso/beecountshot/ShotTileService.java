@@ -45,6 +45,18 @@ import android.widget.Toast;
  */
 public class ShotTileService extends TileService {
 
+    /**
+     * 最近一次"点击反馈"写入副标题的时刻。
+     *
+     * <p>用来挡住状态查询：真机日志里出现过——点下去刚显示"正在截屏…"，
+     * 140 毫秒后就被 onStartListening 那次状态查询的结果（"已就绪 · 点一下截屏记账"）
+     * 盖掉了，用户等于看不到点击反馈。
+     */
+    private static volatile long clickFeedbackAt = 0L;
+
+    /** 点击反馈在副标题上保留多久不被状态查询覆盖。 */
+    private static final long CLICK_FEEDBACK_HOLD_MS = 8000L;
+
     @Override
     public void onStartListening() {
         super.onStartListening();
@@ -54,11 +66,11 @@ public class ShotTileService extends TileService {
         // 系统都会关掉无障碍服务**，这是最常见的一种"点了没反应"，
         // 直接写在副标题上，用户下拉面板就能看到。
         if (!ShotAccessibilityService.isReady() && !RootShell.isGranted(this)) {
-            applyTile("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
+            applyTileFromProbe("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
             return;
         }
 
-        applyTile("检查中…", Tile.STATE_INACTIVE);
+        applyTileFromProbe("检查中…", Tile.STATE_INACTIVE);
 
         // 副标题显示"现在能不能用"：蜜蜂记账的主界面被系统回收后它的截图监听会失效，
         // 这时提前在下拉面板里就告诉用户，比点完再弹提示有用。
@@ -70,17 +82,32 @@ public class ShotTileService extends TileService {
                     ShotBridge.Answer a = ShotBridge.query(
                             getApplicationContext(), "", 2500L);
                     if (!a.received) {
-                        applyTile("蜜蜂记账未运行", Tile.STATE_INACTIVE);
+                        applyTileFromProbe("蜜蜂记账未运行", Tile.STATE_INACTIVE);
                     } else if (a.activityAlive) {
-                        applyTile("已就绪 · 点一下截屏记账", Tile.STATE_INACTIVE);
+                        applyTileFromProbe("已就绪 · 点一下截屏记账", Tile.STATE_INACTIVE);
                     } else {
-                        applyTile("未就绪 · 请先打开蜜蜂记账", Tile.STATE_UNAVAILABLE);
+                        applyTileFromProbe("未就绪 · 先打开一次蜜蜂记账", Tile.STATE_UNAVAILABLE);
                     }
                 } catch (Throwable t) {
                     Logx.w("[tile] status probe failed: " + t.getMessage());
                 }
             }
         }, "bee-tile-status").start();
+    }
+
+    /**
+     * 状态查询专用的副标题更新：**点击反馈还在展示期内就不覆盖**。
+     *
+     * <p>否则会出现"刚点完、反馈一闪就变回已就绪"，用户以为没反应。
+     */
+    private void applyTileFromProbe(String subtitle, int state) {
+        long age = System.currentTimeMillis() - clickFeedbackAt;
+        if (age < CLICK_FEEDBACK_HOLD_MS) {
+            Logx.i("[tile] probe result not shown (click feedback still on, " + age
+                    + "ms ago): " + subtitle);
+            return;
+        }
+        applyTile(subtitle, state);
     }
 
     /**
@@ -147,6 +174,7 @@ public class ShotTileService extends TileService {
         //   副标题纹丝不动 → 这一下压根没送到（应用刚覆盖安装完、磁贴还没重新绑定时会这样，
         //                    属于系统层行为，不是模块逻辑）。
         // 上一次"点了没反应"就是后一种：日志里连一条 clicked 都没有，无从下手。
+        clickFeedbackAt = System.currentTimeMillis();
         applyTile("正在截屏…", Tile.STATE_ACTIVE);
 
         // 尽早把接收器注册好：宿主检测到记账成功时会主动广播把我们从冻结中唤醒，
@@ -249,6 +277,7 @@ public class ShotTileService extends TileService {
 
                         // 把结果写回磁贴副标题。这样"点了没反应"永远有一个看得见的落点：
                         // 副标题停在"正在截屏…"说明流程中途断了，日志里对应位置会有报错。
+                        clickFeedbackAt = System.currentTimeMillis();
                         if (sent || viaA11y) {
                             applyTile("已截屏 · 等蜜蜂记账处理", Tile.STATE_INACTIVE);
                         } else {
