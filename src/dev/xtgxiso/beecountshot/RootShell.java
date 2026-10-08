@@ -136,11 +136,12 @@ public final class RootShell {
      *
      * <p>三条路的取舍：
      * <ol>
-     *   <li>{@code input keycombination KEYCODE_POWER KEYCODE_VOLUME_DOWN}——在输入层
-     *       模拟"电源键+音量下"，走的是<b>系统真实截图流程</b>：文件由系统命名、正常
-     *       登记进媒体库，蜜蜂记账的截图监听器照常触发，下游一条都不用改。</li>
-     *   <li>同样一条，但用数字键码。老一点的 input 只认数字
-     *       （26=电源，25=音量<b>下</b>，24 是音量上，别搞错）。</li>
+     *   <li>{@code input keycombination 26 25}——在输入层模拟"电源键+音量下"，走的是
+     *       <b>系统真实截图流程</b>：文件由系统命名、正常登记进媒体库，
+     *       蜜蜂记账的截图监听器照常触发，下游一条都不用改。
+     *       26=电源，25=音量<b>下</b>（24 是音量上，别搞错）。</li>
+     *   <li>同样一条，但用符号键名 {@code KEYCODE_POWER KEYCODE_VOLUME_DOWN}。
+     *       两条语义完全一样，留着是因为个别 ROM 只认符号写法。</li>
      *   <li>{@code input keyevent 120}（KEYCODE_SYSRQ）——部分 ROM 把 120 接到系统截图，
      *       当作最后的尝试。</li>
      * </ol>
@@ -149,8 +150,16 @@ public final class RootShell {
      * 蜜蜂记账大概率感知不到。
      */
     private static final String[] SHOT_CMDS = new String[]{
-            "input keycombination KEYCODE_POWER KEYCODE_VOLUME_DOWN",
+            // v2.15 换序：**数字键码排到前面**。
+            //
+            // 真机统计（20 次点击）：符号写法成功 14/20，失败的 6 次都退回数字写法，
+            // 而数字写法这 6 次**全部成功**。符号写法失败一次要白等 2 秒再换命令，
+            // 整体就从 1.3 秒变成 3.5 秒——这就是"点了之后要等好久才反应过来"的来源。
+            //
+            // 换序的好处是**最坏情况与原来完全相同**（同样是两条命令、各等 2 秒），
+            // 但如果数字写法确实更稳，就能把这 30% 的慢case直接省掉。
             "input keycombination 26 25",
+            "input keycombination KEYCODE_POWER KEYCODE_VOLUME_DOWN",
             "input keyevent 120",
     };
 
