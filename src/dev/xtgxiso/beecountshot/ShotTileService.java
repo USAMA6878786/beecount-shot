@@ -219,15 +219,17 @@ public class ShotTileService extends TileService {
 
                         // 冗余通道：再让 root 发一次放行信号。宿主退后台可能被冻结，
                         // 普通广播要等它解冻才投得到；root 这条不受应用后台限制。
-                        // 幂等（截止时间是取最大值），所以两条一起发没有副作用。
-                        RootShell.broadcast(Const.ACTION_ARM, HostInfo.pkg(),
+                        // 宿主侧对相同的截止时间做了去重，所以两条一起发没有副作用。
+                        //
+                        // 这一步和下面的"收面板"合并成**一次 su**：每调一次 su 就是起一个
+                        // 新进程（实测 150~250ms），分开做等于白等两百毫秒，而这段时间
+                        // 直接算在"点击→截屏"的延迟里。
+                        RootShell.Result r = RootShell.armAndCollapse(Const.ACTION_ARM, HostInfo.pkg(),
                                 "--el " + Const.EXTRA_UNTIL + " " + until
                                         + " --ez " + Const.EXTRA_PRECISE + " "
                                         + (Prefs.precisePartial(app) ? "true" : "false"),
                                 Intent.FLAG_RECEIVER_FOREGROUND
                                         | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
-
-                        RootShell.Result r = RootShell.collapseStatusBar();
                         long spent = System.currentTimeMillis() - t0;
                         Logx.i("[tile] root stage finished in " + spent + "ms, exit=" + r.exit);
 
