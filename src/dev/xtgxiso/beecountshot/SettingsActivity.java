@@ -90,14 +90,17 @@ public class SettingsActivity extends Activity {
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
                 + "• 已授予本模块 root（截屏、收起控制中心、补发放行信号、重启宿主）\n"
                 + "• 已授予蜜蜂记账本体 root（只有删截图要用）\n"
-                + "• 无 root 时才需要额外开启「记账截图」的截屏服务（无障碍）");
+                + "• **建议开启「记账截图」的截屏服务（无障碍）**：它是截屏的主路径，\n"
+                + "  不走按键注入，最快也最稳。没开也能用，会自动退回 root 模拟按键。");
 
         // ---------------- 磁贴 ----------------
         heading(root, "控制中心磁贴");
         body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → 等约 0.6 秒 → 截当前屏幕"
                 + " → 交给蜜蜂记账识别记账。\n\n"
-                + "截屏由 root 在输入层模拟「电源键 + 音量下」，走系统真实截图流程；"
-                + "没给 root 才退回无障碍服务。\n\n"
+                + "截屏有两条路，都走系统真实截图流程（有动画、进相册）：\n"
+                + "① 「截屏服务」（无障碍）直调系统截屏动作——**主路径，最快最稳**；\n"
+                + "② 关着的话退回 root 模拟「电源键 + 音量下」（这条会和面板收起动画抢时间，"
+                + "等待时长会被抬到 500ms 下限）。\n\n"
                 + "**平时的普通截图不会再触发识别**，只有点这个磁贴那一次会。\n"
                 + "连着点几次也能一张不漏地分别记账。");
         button(root, "添加「记账截图」磁贴", new View.OnClickListener() {
@@ -346,10 +349,10 @@ public class SettingsActivity extends Activity {
         boolean a11y = ShotAccessibilityService.isReady();
         boolean root = RootShell.isGranted(this);
 
-        sb.append(a11y ? "✓ 截屏服务已开启"
-                : (root ? "○ 截屏服务未开启（有 root，不需要它）" : "✗ 截屏服务未开启"));
-        if (!a11y && !root) {
-            sb.append("　← 请到「无障碍」里打开它");
+        sb.append(a11y ? "✓ 截屏服务已开启（主路径）"
+                : (root ? "○ 截屏服务未开启 · 走 root 兜底，建议开启" : "✗ 截屏服务未开启"));
+        if (!a11y) {
+            sb.append("　← 到「无障碍」里打开「记账截图」会更快");
         }
         sb.append("　");
         sb.append(root ? "✓ root 已授权" : "✗ root 未授权");
