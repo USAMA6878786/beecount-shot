@@ -90,7 +90,9 @@ public class ShotAccessibilityService extends AccessibilityService {
                         performShot(service);
                     }
                 };
-                long wait = Math.max(150L, delayMs);
+                // 不再设下限（原来有个 150ms 的地板）：这条是"直调系统截屏动作"，
+                // 跟控制中心面板收没收干净无关，没有任何等待的理由。
+                long wait = Math.max(0L, delayMs);
                 MAIN.postDelayed(pendingShot, wait);
                 Logx.i("[a11y] screenshot scheduled in " + wait + "ms");
             }
