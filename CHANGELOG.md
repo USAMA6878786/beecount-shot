@@ -1,5 +1,42 @@
 # 更新日志
 
+## v2.20
+
+**清掉冗余老代码 + 去掉那个点了没反应的「添加到桌面」按钮**
+
+### 那个按钮为什么没用反应
+
+它调的是 `AppWidgetManager.requestPinAppWidget`——需要桌面实现"钉住小组件"这套接口。
+**小米桌面会返回"支持"，但点了完全没反应**，属于系统的坑，不是调用姿势不对。
+
+**能不能用 root 实现？不能。** 往桌面摆小组件是**桌面应用（启动器）自己**的
+`AppWidgetHost` 才管的事，Android 没有给任何应用（包括 root）提供这个接口——
+`cmd appwidget` 只管绑定权限，管不了摆放。所以按你说的，按钮去掉了，
+改成在正文里直接写清楚手动步骤（桌面 → 长按空白处 → 添加小部件 → 拖上去）。
+留一个点了没反应的按钮比不给更糟。
+
+### 清掉的死代码
+
+| 位置 | 是什么 | 为什么可以删 |
+|---|---|---|
+| `RootShell.collapseStatusBar()` | 单独执行"收面板" | v2.16 起已并进 `armAndCollapse()`（放行广播+收面板一次 su），没有调用方 |
+| `RootShell.exportToDownload()` | 把文件拷到 Download | 日志导出早改走 `appendLogcatToDownload()` |
+| `HostVerdict.isPrecise()` | 读"推断开关" | 只有 `setPrecise()` 在用，读取端从来没被调用 |
+| `ExpenseWidgetProvider.isHorizontal()` | 给配置页判断横竖 | 配置页没用到 |
+| `WidgetPrefs.cachedAt()` | 读缓存时间戳 | 没有调用方 |
+| `DbWatcher.widgetCount()` | 读小组件个数 | 没有调用方 |
+| `HostState.aliveSince()` / `downSince()` | 两个 getter | 字段本身在写遥测，但 getter 没人用 |
+| `SettingsActivity.requestAddWidget()` / `showManualAddHint()` | 上面那个按钮的实现 | 按钮删了，它们也没人调 |
+| 6 个无用 `import` | `AlertDialog`、`PackageManager`、`Log`、`RadioButton`、`RadioGroup`、`Intent` | 编译期就没人引用 |
+
+**顺带修掉几处和实现不符的过时注释**（这种最误导人）：
+`ShotTileService` 的类注释还写着"再等一会儿，等待时长从收起命令发出后起算"，
+设置页正文还写着"等约 0.6 秒"、常见问题还写着"把等待时长调大一档"——
+等待这个功能在 v2.18 就已经整个删掉了。
+
+**清理完又扫了一遍，没有残留。** 功能一条没少：加磁贴、申请 root、重启宿主、
+删截图开关、透明度滑块、日志导出、诊断全在（已逐个核对）。
+
 ## v2.19
 
 **用 root 自动把「截屏服务」（无障碍）打开——这是"中间某一次卡住"的根治办法**
