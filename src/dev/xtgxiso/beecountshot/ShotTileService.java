@@ -246,6 +246,23 @@ public class ShotTileService extends TileService {
                         //
                         // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
                         final boolean a11yReady = ShotAccessibilityService.isReady();
+                        if (!a11yReady) {
+                            // 无障碍没开 —— 用 root 帮用户把它打开。
+                            //
+                            // 这是**唯一**能让整个功能又快又稳的办法：无障碍直调系统截屏动作
+                            // 不走按键注入，而 root 注入按键偶尔会完全没生效、白等 1~2 秒
+                            // （就是"中间某一次卡住"的原因）。
+                            //
+                            // 覆盖安装模块后系统会自动关掉无障碍服务，用户往往不会再去开一次，
+                            // 于是一直退在慢的路上。模块有 root，就自己把它办了。
+                            //
+                            // 本次点击仍然走 root；服务连上之后，**下一次点击**就走快路了。
+                            try {
+                                RootShell.ensureAccessibilityEnabled();
+                            } catch (Throwable t) {
+                                Logx.w("[tile] ensure a11y failed: " + t.getMessage());
+                            }
+                        }
                         Logx.i("[tile] 立刻截屏（不等待）a11y=" + a11yReady);
                         final long shotAt = System.currentTimeMillis();
 
