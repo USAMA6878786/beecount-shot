@@ -242,6 +242,21 @@ public final class RootShell {
         return false;
     }
 
+    /** 立一个"现在"的时间标记；之后用 {@link #waitForNewShot} 判断有没有更新的图出现。 */
+    public static void markNow() {
+        exec("rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null", 5000L);
+    }
+
+    /**
+     * 在 {@code timeoutMs} 内等一张"比标记更新"的图出现。
+     *
+     * <p>给"无障碍直调截屏"那条路做确认用：受理了不代表图一定出来，
+     * 没出来就退回 root 模拟按键。
+     */
+    public static boolean waitForNewShot(long timeoutMs) {
+        return waitForScreenshot(timeoutMs);
+    }
+
     /**
      * 轮询等系统把截图写出来（含小米的 {@code .pending-} 临时文件，出现了就算数）。
      *
