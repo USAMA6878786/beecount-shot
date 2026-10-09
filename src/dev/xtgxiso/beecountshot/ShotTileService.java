@@ -239,11 +239,20 @@ public class ShotTileService extends TileService {
                             self.collapseByActivity();
                         }
 
+                        // 截屏走哪条路，在这里先定下来：
+                        //   无障碍可用 → 直调系统截屏动作，不经过按键注入，跟面板状态无关；
+                        //   否则        → root 模拟"电源键+音量下"，但必须给足等待时间
+                        //                （见 Const.ROOT_MIN_SETTLE_MS 的说明）。
+                        final boolean a11yReady = ShotAccessibilityService.isReady();
+                        final long settle = a11yReady ? delay
+                                : Math.max(delay, Const.ROOT_MIN_SETTLE_MS);
+
                         // 延迟从"收起命令已发出"之后起算，保证面板来得及收干净。
-                        Logx.i("[tile] shooting in " + delay + "ms");
+                        Logx.i("[tile] shooting in " + settle + "ms (a11y=" + a11yReady
+                                + (settle != delay ? "，已抬到下限以避开面板收起动画" : "") + ")");
                         final long shotAt = System.currentTimeMillis();
                         try {
-                            Thread.sleep(delay);
+                            Thread.sleep(settle);
                         } catch (InterruptedException ignored) {
                         }
 
@@ -260,27 +269,34 @@ public class ShotTileService extends TileService {
                             Logx.i("[tile] auto-delete is OFF; screenshot will be kept");
                         }
 
-                        // 主路径：root 触发系统截屏（内部会自己验证图有没有出来）。
-                        // 不依赖无障碍服务，所以覆盖安装后系统关掉它也无所谓。
-                        boolean sent = RootShell.takeScreenshotViaRoot();
-
-                        // root 三条命令都没截出图，才退回无障碍服务——双保险，谁成用谁。
-                        boolean viaA11y = false;
-                        if (!sent) {
-                            Logx.w("[tile] root screenshot produced nothing -> falling back to a11y");
-                            if (ShotAccessibilityService.isReady()) {
-                                ShotAccessibilityService.scheduleShot(0);
-                                viaA11y = true;
-                            } else {
-                                Logx.e("[tile] neither root nor a11y produced a screenshot;"
-                                        + " see the [root] shot cmd[] lines above");
+                        // ---- 截屏 ----
+                        //
+                        // 主路径：**无障碍直调系统截屏动作**。它不走输入系统的按键注入，
+                        // 所以不会和控制中心面板的收起动画抢时间——真机上这是唯一稳定的那条路：
+                        // 原先用 root 模拟按键时，"第一次发命令毫无反应、白等 2 秒再换一条"
+                        // 大约三成点击会踩到，表现就是"点了要等好久才开始截图"。
+                        //
+                        // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
+                        boolean sent = false;
+                        if (a11yReady) {
+                            RootShell.markNow();   // 一次 su，用来判断"图到底出来了没有"
+                            sent = ShotAccessibilityService.shootNow();
+                            if (sent && !RootShell.waitForNewShot(1500L)) {
+                                // 系统受理了但没等到图 —— 退回 root，双保险
+                                Logx.w("[tile] a11y 触发了但没等到新图 -> 退回 root 模拟按键");
+                                sent = false;
                             }
+                        } else {
+                            Logx.i("[tile] 无障碍未就绪 -> 走 root 模拟按键");
+                        }
+                        if (!sent) {
+                            sent = RootShell.takeScreenshotViaRoot();
                         }
 
                         // 把结果写回磁贴副标题。这样"点了没反应"永远有一个看得见的落点：
                         // 副标题停在"正在截屏…"说明流程中途断了，日志里对应位置会有报错。
                         clickFeedbackAt = System.currentTimeMillis();
-                        if (sent || viaA11y) {
+                        if (sent) {
                             applyTile("已截屏 · 等蜜蜂记账处理", Tile.STATE_INACTIVE);
                         } else {
                             applyTile("截屏失败 · 请导出日志", Tile.STATE_UNAVAILABLE);
