@@ -79,10 +79,6 @@ final class HostVerdict {
         precise = v;
     }
 
-    static boolean isPrecise() {
-        return precise;
-    }
-
     /**
      * 结算一次结果，返回这次可以删掉的文件（可能为 null = 还不能删）。
      *
