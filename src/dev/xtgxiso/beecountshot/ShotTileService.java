@@ -22,25 +22,29 @@ import android.widget.Toast;
  *       （宿主退后台会被冻结，普通广播要等它解冻才投得到）。
  *       两条都只是"登记一张限时通行证"，且宿主侧对相同的截止时间做了去重，
  *       所以重复投递没有副作用。</li>
- *   <li><b>收面板</b>——有 root 走 {@code cmd statusbar collapse}；没有则退回
- *       {@code startActivityAndCollapse} + 透明中转页。</li>
- *   <li><b>再等一会儿</b>——等待时长是**从收起命令发出之后**起算的，这样无论 su 开销多大，
- *       截图时面板都已经收干净了。</li>
- *   <li><b>截屏</b>——主路径是 root 模拟"电源键+音量下"（系统真实截图流程）；
- *       root 三条命令都没截出图，才退回无障碍服务。</li>
+ *   <li><b>收面板</b>——有 root 走 {@code cmd statusbar collapse}（和上一步合并成一次 su）；
+ *       没有则退回 {@code startActivityAndCollapse} + 透明中转页。</li>
+ *   <li><b>立刻截屏，不等待</b>——收面板命令一返回就发截屏请求。
+ *       早先这里有一段"等面板收完"的固定等待（150~1300ms 可选），v2.18 已整个删掉：
+ *       那段等待是配合"root 注入按键"那条路的，而现在的截屏走无障碍直调系统动作，
+ *       不经过输入系统，跟面板状态无关。</li>
+ *   <li><b>截屏</b>——主路径是<b>无障碍直调</b>
+ *       {@code AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT}（不经过按键注入，
+ *       没有"注入被面板吃掉"的问题）；无障碍没开时才退回 root 模拟"电源键+音量下"。</li>
  * </ol>
  *
  * <p>历史沿革（真机反馈驱动）：
  * <ul>
  *   <li>最初用 {@code startActivityAndCollapse} 收面板，实测在部分 ROM 上完全不生效，
  *       结果是截到的图里带着控制中心。改用 root 的 shell 命令。</li>
- *   <li>最初的延迟是从"点击磁贴"起算，su / 启动 Activity 的开销会吃掉这段延迟，
- *       于是"截图太快"。改成从收起命令发出后起算。</li>
  *   <li>中间版本用过"模块 App 用 root 往宿主目录写一个放行文件"，
  *       实测 {@code su} 跑在全局挂载命名空间、看不到应用数据目录，那条路是静默失效的，
  *       已彻底移除。现在只认广播（见 {@link ArmSignal}）。</li>
- *   <li>截屏原先依赖无障碍服务，但**应用被覆盖安装后系统会自动关掉它**，
- *       于是每次更新模块都会遇到"点了没反应"。改成 root 为主、无障碍为退路。</li>
+ *   <li>截屏先是依赖无障碍，但应用被覆盖安装后系统会自动关掉它，于是改成 root 模拟按键；
+ *       后来又发现 root 注入的按键**会被正在收起的控制面板吃掉**（约三成的点击
+ *       第一次发命令没反应、要白等 1~2 秒），于是改回无障碍为主路径、
+ *       并且由模块**用 root 自己把无障碍服务打开**（见
+ *       {@link RootShell#ensureAccessibilityEnabled()}），root 模拟按键退居兜底。</li>
  * </ul>
  */
 public class ShotTileService extends TileService {
