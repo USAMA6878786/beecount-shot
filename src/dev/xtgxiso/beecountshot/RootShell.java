@@ -67,22 +67,11 @@ public final class RootShell {
         return ok;
     }
 
-    /**
-     * 收起控制中心。
-     *
-     * <p>标准做法 {@code startActivityAndCollapse} 依赖 ROM 实现，在不少定制系统上完全
-     * 不生效（实测面板纹丝不动，结果截到的图里带着控制中心）。{@code cmd statusbar collapse}
-     * 是系统自带的 shell 命令，走 StatusBarManagerService，与下拉手势收起完全一致。
-     *
-     * <p>返回值 exit 即 collapse 的结果，调用方据此判断要不要退回非 root 方案。
-     */
-    public static Result collapseStatusBar() {
-        String cmd = "cmd statusbar collapse; C=$?; echo COLLAPSE_EXIT=$C; exit $C";
-        Result r = exec(cmd, 12000L);
-        Logx.i("[root] collapse -> exit=" + r.exit
-                + " out=" + trim(r.out) + " err=" + trim(r.err));
-        return r;
-    }
+    // v2.20 删除：collapseStatusBar()
+    //
+    // 它做的事已经并进 armAndCollapse()（放行广播 + 收面板一次 su 完成），
+    // 单独留着没有调用方。收面板本身仍然在做，见 armAndCollapse 里的
+    // `cmd statusbar collapse`。
 
     /**
      * 把「补发放行广播」和「收起控制中心」合并成**一次 su**。
@@ -367,21 +356,10 @@ public final class RootShell {
         return (slash >= 0) ? p.substring(slash + 1) : p;
     }
 
-    /** 把任意文件拷到 Download/BeecountShot 下，供用户直接取用。 */
-    public static boolean exportToDownload(String srcPath, String dstName) {
-        String dir = "/sdcard/Download/" + Const.LOG_DIR;
-        String cmd = ""
-                + "if [ -f " + srcPath + " ]; then "
-                + "mkdir -p " + dir + "; "
-                + "cp " + srcPath + " " + dir + "/" + dstName + "; "
-                + "chmod 644 " + dir + "/" + dstName + "; "
-                + "ls -l " + dir + "/" + dstName + "; "
-                + "else echo NO_SRC; fi";
-        Result r = exec(cmd, 10000L);
-        Logx.i("[root] export " + dstName + " -> exit=" + r.exit
-                + " out=" + trim(r.out) + " err=" + trim(r.err));
-        return r.exit == 0 && r.out != null && r.out.indexOf("NO_SRC") < 0;
-    }
+    // v2.20 删除：exportToDownload()
+    //
+    // 早期用来把日志文件拷到 Download 供用户取用。后来日志导出走的是
+    // appendLogcatToDownload()（root 直接 logcat -d 落盘），这条路就没人调了。
 
     // ---------------------------------------------------------------- 诊断
 
