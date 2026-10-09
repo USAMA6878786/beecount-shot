@@ -182,7 +182,6 @@ public class ShotTileService extends TileService {
         ShotBridge.ensureReceiver(app);
 
         try {
-            final long delay = Prefs.delayMs(app);
             final boolean root = RootShell.isGranted(app);
 
             // 截屏的两条路：root（主）或无障碍服务（退路）。
@@ -198,11 +197,10 @@ public class ShotTileService extends TileService {
                 return;
             }
             final long clickAt = System.currentTimeMillis();
-            // 窗口给得宽松一点：su 开销 + 延迟 + 系统落库 + ContentObserver 回调都要装进去。
-            final long until = clickAt + delay + Const.ARM_GRACE_MS + 6000L;
+            // 窗口给得宽松一点：su 开销 + 系统落库 + ContentObserver 回调都要装进去。
+            final long until = clickAt + Const.ARM_GRACE_MS + 6000L;
 
-            Logx.i("[tile] delay=" + delay + "ms root=" + root
-                    + " armWindow=+" + (until - clickAt) + "ms");
+            Logx.i("[tile] root=" + root + " armWindow=+" + (until - clickAt) + "ms");
 
             // 通道 B：广播（很快，先在主线程发出去）
             sendArmBroadcast(app, until);
@@ -239,22 +237,17 @@ public class ShotTileService extends TileService {
                             self.collapseByActivity();
                         }
 
-                        // 截屏走哪条路，在这里先定下来：
-                        //   无障碍可用 → 直调系统截屏动作，不经过按键注入，跟面板状态无关；
-                        //   否则        → root 模拟"电源键+音量下"，但必须给足等待时间
-                        //                （见 Const.ROOT_MIN_SETTLE_MS 的说明）。
+                        // **不再等待**：收起面板的命令一返回就立刻截屏。
+                        //
+                        // v2.18 把「收面板后先等一会儿再截屏」整个去掉了。那段等待原本是配合
+                        // "root 注入按键"那条老路径的——注入的按键会被正在收起的面板吃掉，
+                        // 所以要等面板收干净。现在截屏走无障碍直调系统的截屏动作，不经过
+                        // 按键注入、跟面板状态无关，等待就没有存在理由了。
+                        //
+                        // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
                         final boolean a11yReady = ShotAccessibilityService.isReady();
-                        final long settle = a11yReady ? delay
-                                : Math.max(delay, Const.ROOT_MIN_SETTLE_MS);
-
-                        // 延迟从"收起命令已发出"之后起算，保证面板来得及收干净。
-                        Logx.i("[tile] shooting in " + settle + "ms (a11y=" + a11yReady
-                                + (settle != delay ? "，已抬到下限以避开面板收起动画" : "") + ")");
+                        Logx.i("[tile] 立刻截屏（不等待）a11y=" + a11yReady);
                         final long shotAt = System.currentTimeMillis();
-                        try {
-                            Thread.sleep(settle);
-                        } catch (InterruptedException ignored) {
-                        }
 
                         // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
                         // 必须在**截屏之前**就起好，否则可能错过删除窗口。
@@ -306,7 +299,7 @@ public class ShotTileService extends TileService {
                         // 这一步是为了"失败现场"：logcat 会轮转，等用户发现问题再去导就晚了。
                         // 两个进程的日志都在里面（tag=BeeShot），成没成一目了然。
                         try {
-                            Thread.sleep(delay + 4000L);
+                            Thread.sleep(4000L);
                         } catch (InterruptedException ignored) {
                         }
                         Logx.i("[tile] dumping logcat snapshot for this attempt");
@@ -316,8 +309,8 @@ public class ShotTileService extends TileService {
             } else {
                 Logx.i("[tile] no root -> using startActivityAndCollapse");
                 collapseByActivity();
-                Logx.i("[tile] shooting in " + delay + "ms");
-                ShotAccessibilityService.scheduleShot(delay);
+                Logx.i("[tile] 立刻截屏（不等待）");
+                ShotAccessibilityService.scheduleShot(0);
             }
         } catch (Throwable t) {
             Logx.e("[tile] onClick failed", t);
