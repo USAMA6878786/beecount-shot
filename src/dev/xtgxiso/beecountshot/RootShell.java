@@ -116,6 +116,40 @@ public final class RootShell {
         return r;
     }
 
+    /**
+     * 用 root 把模块自己的「截屏服务」（无障碍）打开。
+     *
+     * <p><b>为什么需要它：</b>无障碍的 {@code GLOBAL_ACTION_TAKE_SCREENSHOT} 是
+     * <b>直接调系统的截屏动作</b>，比"root 注入按键"快得多也稳得多——注入按键偶尔会
+     * 完全没生效，然后要白等 1~2 秒确认再换下一条命令，那一次点击就"卡住"了。
+     *
+     * <p>但 Android 有个机制：<b>应用被覆盖安装后，它的无障碍服务会被系统自动关掉。</b>
+     * 于是每次更新模块，用户都得手动再去「无障碍」里开一次；不去开就一直退在慢的那条路上
+     * （真机日志里就是这样：全程 {@code a11y=false}）。
+     *
+     * <p>模块有 root，所以可以自己把这件事办掉：读出现有的
+     * {@code enabled_accessibility_services}，<b>在末尾追加</b>我们这一个
+     * （**不动用户已经开的其它服务**），再把 {@code accessibility_enabled} 置 1。
+     * 整段在一次 su 里做完。已经开着的直接跳过，不重复写。
+     */
+    public static void ensureAccessibilityEnabled() {
+        final String comp = "dev.xtgxiso.beecountshot/"
+                + "dev.xtgxiso.beecountshot.ShotAccessibilityService";
+        String cmd = ""
+                + "C=" + comp + "; "
+                + "V=$(settings get secure enabled_accessibility_services 2>/dev/null); "
+                + "case \":$V:\" in "
+                + "  *\":$C:\"*) echo ALREADY ;; "
+                + "  *) if [ -z \"$V\" ] || [ \"$V\" = null ]; then N=\"$C\"; "
+                + "     else N=\"$V:$C\"; fi; "
+                + "     settings put secure enabled_accessibility_services \"$N\" && echo ADDED ;; "
+                + "esac; "
+                + "settings put secure accessibility_enabled 1";
+        Result r = exec(cmd, 12000L);
+        Logx.i("[root] ensure a11y enabled -> exit=" + r.exit
+                + " out=" + trim(r.out) + " err=" + trim(r.err));
+    }
+
     /** 强制停止宿主（改完模块配置后必须重启它，hook 才生效）。 */
     public static boolean forceStopHost() {
         String pkg = HostInfo.pkg();
@@ -228,8 +262,10 @@ public final class RootShell {
                     + " out=" + trim(r.out)
                     + " (su 用了 " + (System.currentTimeMillis() - t0) + "ms)");
 
+            // 第一条命令只等 1 秒（实测生效时 350ms 就落盘了），后面几条才等满 2 秒。
             long t1 = System.currentTimeMillis();
-            if (waitForScreenshot(2000L)) {
+            long window = (i == 0) ? Const.SHOT_FIRST_TRY_MS : Const.SHOT_TRY_MS;
+            if (waitForScreenshot(window)) {
                 Logx.i("[root] screenshot landed via cmd[" + i + "] —— 发命令到确认出图 "
                         + (System.currentTimeMillis() - t1) + "ms，本轮共 "
                         + (System.currentTimeMillis() - t0) + "ms");
