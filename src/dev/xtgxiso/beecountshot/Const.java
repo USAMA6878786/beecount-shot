@@ -176,6 +176,18 @@ public final class Const {
     public static final long ARM_GRACE_MS = 14000L;
 
     /**
+     * 走"root 模拟按键"这条路时，「等待时长」的下限。
+     *
+     * <p>真机实测出来的：{@code input keycombination 26 25} 注入的按键会被
+     * **正在收起的控制中心面板**吃掉。等待时长设成 150ms 时，按键注入的时刻只比面板收起
+     * 动画结束早几十毫秒，于是约**三成**的点击第一次发命令毫无反应，要白等 2 秒换下一条
+     * 命令才成——表现就是"点了之后要等好久才开始截图"。
+     *
+     * <p>给 500ms 的下限就避开了这个窗口。走无障碍直调（不经过按键注入）时不需要它。
+     */
+    public static final long ROOT_MIN_SETTLE_MS = 500L;
+
+    /**
      * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
      *
      * <p>这个 flag 在 Android 里是**隐藏 API**，公开 SDK 的 android.jar 里没有这个常量，
