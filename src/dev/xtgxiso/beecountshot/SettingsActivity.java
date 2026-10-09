@@ -85,6 +85,19 @@ public class SettingsActivity extends Activity {
         // 也让副标题立刻刷新成最新状态。（打开设置页是个很自然的时机。）
         ShotTileService.requestRefresh(this);
 
+        // 无障碍服务没开的话，用 root 帮用户打开。原因见 RootShell.ensureAccessibilityEnabled()：
+        // 它是截屏又快又稳的那条主路径，而覆盖安装模块后系统会自动把它关掉——
+        // 用户往往不会再去手动开一次，于是一直退在慢的 root 模拟按键上。
+        if (!ShotAccessibilityService.isReady()) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    RootShell.ensureAccessibilityEnabled();
+                    ShotTileService.requestRefresh(SettingsActivity.this);
+                }
+            }, "bee-ensure-a11y").start();
+        }
+
         // ---------------- 使用前提 ----------------
         heading(root, "使用前提");
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
