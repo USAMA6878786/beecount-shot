@@ -132,14 +132,6 @@ final class WidgetPrefs {
         }
     }
 
-    static long cachedAt(Context c) {
-        try {
-            return sp(c).getLong(K_TS, 0L);
-        } catch (Throwable t) {
-            return 0L;
-        }
-    }
-
     private WidgetPrefs() {
     }
 }
