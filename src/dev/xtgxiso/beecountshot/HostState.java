@@ -40,14 +40,6 @@ final class HostState {
         return activityAlive;
     }
 
-    static long aliveSince() {
-        return aliveSince;
-    }
-
-    static long downSince() {
-        return downSince;
-    }
-
     private HostState() {
     }
 }
