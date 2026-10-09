@@ -48,10 +48,6 @@ final class DbWatcher {
         widgetCount = Math.max(0, count);
     }
 
-    static int widgetCount() {
-        return widgetCount;
-    }
-
     static synchronized void start(final Context ctx) {
         if (running) {
             return;
