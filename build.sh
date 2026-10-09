@@ -10,8 +10,20 @@ set -e
 VERSION_NAME="2.19"
 VERSION_CODE="30"
 
-ROOT="D:/buddy/2026-10-04-18-03-46"
-PROJ="$ROOT/beecount-shot"
+# 脚本自己定位自己 —— 这个仓库可能被放在任何地方，**不要把本机路径写进脚本**。
+# （以前这里写死了绝对路径，等于把本机的目录结构一起提交进了仓库。）
+#
+# 注意 Git Bash：`pwd` 给出来的是 /d/xxx 这种形式，而 java.exe / aapt2.exe / d8 这些
+# **原生 Windows 程序只认 D:/xxx**，直接把 /d/xxx 传进去会失败。
+# `pwd -W` 就是专门用来拿 Windows 形式路径的，只在 MinGW/MSYS/Cygwin 下存在，
+# 所以要用 uname 判断一下再用。
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -W)" ;;
+esac
+PROJ="$_HERE"
+ROOT="$(dirname "$PROJ")"
 TC="$ROOT/toolchain"
 JAVA_HOME="$TC/jdk-17.0.20.1+1"
 JAVA="$JAVA_HOME/bin/java.exe"
@@ -24,7 +36,17 @@ LIBXPOSED="$TC/libxposed/classes.jar"
 
 OUT="$PROJ/build"
 APK="$PROJ/release/BeecountShot-v${VERSION_NAME}.apk"
-PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+# 打 dex / 打包资源的小脚本需要一个 python：优先 $PYTHON，其次 PATH 里的 python3 / python。
+if [ -n "$PYTHON" ]; then
+  PY="$PYTHON"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="python3"
+elif command -v python >/dev/null 2>&1; then
+  PY="python"
+else
+  echo "找不到 python。装一个，或者用 PYTHON=/path/to/python 指定。" >&2
+  exit 1
+fi
 
 echo "=== 0. 清理 ==="
 rm -rf "$OUT"
@@ -83,13 +105,25 @@ echo "=== 4. 打成 jar 并转 dex ==="
 echo "=== 5. 打包 dex + xposed 注册文件 ==="
 "$PY" "$PROJ/pack.py" "$OUT/base.apk" "$OUT/dex/classes.dex" "$PROJ/xposed" "$OUT/unsigned.apk"
 
-echo "=== 6. 生成签名密钥 ==="
+echo "=== 6. 检查签名密钥 ==="
+# ⚠️ 密钥**故意不放进仓库**，只保留在本地。所以这里不做"缺失就自动生成"——
+# 那会悄悄换掉签名，后果是：新包和已装的版本签名不同，必须卸载重装
+# （卸载会连带清掉 root 授权和 LSPosed 作用域），而且没有任何提示。
 KS="$PROJ/beecount-shot.jks"
 if [ ! -f "$KS" ]; then
-  "$KEYTOOL" -genkeypair -noprompt \
-    -keystore "$KS" -storepass android -keypass android \
-    -alias beecountshot -keyalg RSA -keysize 2048 -validity 10000 \
-    -dname "CN=BeecountShot, OU=xtgxiso, O=xtgxiso, L=Beijing, S=Beijing, C=CN"
+  echo ""
+  echo "  ✗ 找不到签名密钥：$KS"
+  echo ""
+  echo "    密钥不进仓库（已加进 .gitignore），请从你自己的备份里放回来。"
+  echo "    如果你确实要一把全新的密钥（⚠️ 等于换签名，老设备必须卸载重装），"
+  echo "    自己手动生成，命令："
+  echo ""
+  echo "      keytool -genkeypair -noprompt -keystore \"$KS\" \\"
+  echo "        -storepass android -keypass android -alias beecountshot \\"
+  echo "        -keyalg RSA -keysize 2048 -validity 10000 \\"
+  echo "        -dname \"CN=BeecountShot, OU=xtgxiso, O=xtgxiso, L=Beijing, S=Beijing, C=CN\""
+  echo ""
+  exit 1
 fi
 
 echo "=== 7. zipalign 对齐 ==="
