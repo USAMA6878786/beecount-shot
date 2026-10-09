@@ -336,11 +336,6 @@ public class ExpenseWidgetProvider extends AppWidgetProvider {
         return c + " ";
     }
 
-    /** 供配置页判断横竖版式用（与渲染同一套阈值）。 */
-    static boolean isHorizontal(int widthDp) {
-        return widthDp >= HORIZONTAL_MIN_WIDTH_DP;
-    }
-
     /** 供配置页预览背景色用。 */
     static int bgColor(int alpha) {
         return Color.argb(Math.max(0, Math.min(255, alpha)), 255, 255, 255);
