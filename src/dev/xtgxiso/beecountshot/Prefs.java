@@ -9,66 +9,20 @@ import java.io.File;
 public final class Prefs {
 
     private static final String FILE = "cfg";
-    private static final String KEY_DELAY = "delay_ms";
     private static final String KEY_AUTO_DELETE = "auto_delete";
     private static final String KEY_PRECISE = "precise_partial";
 
-    /**
-     * 默认等待 600ms。
-     *
-     * <p>这个等待是从"收起面板的命令已经发出"之后才开始算的（见 ShotTileService），
-     * 所以它只覆盖面板收起动画本身（约 250~350ms），留了一倍余量。
-     */
-    public static final long DEFAULT_DELAY_MS = 600L;
-
-    /**
-     * 设置页提供的候选值，**从小到大**。
-     *
-     * <p>150ms 是下限：没给 root 时会走无障碍服务那条路，那条路内部有
-     * {@code Math.max(150, delay)} 的地板（见 ShotAccessibilityService），再小也不会生效。
-     * 150 / 300 属于"抢速度"的档位，面板收起动画还没走完就可能被拍进图里。
-     *
-     * <p>曾经有过 2000ms 档，实测太长且没人用，已下架。老版本存过这个值的设备会在
-     * {@link #delayMs} 里被自动贴到最接近的档位（2000 → 1300），不需要用户手动改。
-     */
-    public static final long[] DELAY_OPTIONS =
-            new long[]{150L, 300L, 600L, 900L, 1300L};
-
-    public static long delayMs(Context c) {
-        try {
-            return snapToOption(c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .getLong(KEY_DELAY, DEFAULT_DELAY_MS));
-        } catch (Throwable t) {
-            return DEFAULT_DELAY_MS;
-        }
-    }
-
-    /**
-     * 把一个历史遗留的等待值贴到最接近的候选档位上。
-     *
-     * <p>用于兼容"存过已下架档位"的情况（老版本有 2000ms 这一档）。这样设置页永远
-     * 恰好只有一个档位被勾选，不会出现"一个都没选中"的空档。
-     */
-    public static long snapToOption(long v) {
-        long best = DELAY_OPTIONS[0];
-        long bestDiff = Long.MAX_VALUE;
-        for (long opt : DELAY_OPTIONS) {
-            long diff = Math.abs(opt - v);
-            if (diff < bestDiff) {
-                bestDiff = diff;
-                best = opt;
-            }
-        }
-        return best;
-    }
-
-    public static void setDelayMs(Context c, long v) {
-        try {
-            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .edit().putLong(KEY_DELAY, v).apply();
-        } catch (Throwable ignored) {
-        }
-    }
+    // ---------------------------------------------------------------- 关于「等待时长」
+    //
+    // v2.18 把「收面板后先等一会儿再截屏」整个去掉了：收面板之后**立刻**截屏。
+    //
+    // 为什么敢去掉：截屏现在走的是无障碍的 GLOBAL_ACTION_TAKE_SCREENSHOT，
+    // 那是**直接调系统的截屏动作**，不经过输入系统的按键注入，所以跟控制中心面板
+    // 收没收干净没有关系。原来那段等待是为了配合"注入按键"那条老路径（按键会被
+    // 正在收起的面板吃掉），换路径之后它就没有存在理由了。
+    //
+    // 留个记录免得以后又绕回来：老的 delay_ms 配置项还躺在 SharedPreferences 里没人读，
+    // 不用管它。
 
     /** 模块 App 进程的日志文件（私有目录，再由设置页导出）。 */
     public static String appLogPath(Context c) {
