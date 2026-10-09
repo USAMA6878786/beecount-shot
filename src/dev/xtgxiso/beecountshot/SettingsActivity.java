@@ -1,26 +1,21 @@
 package dev.xtgxiso.beecountshot;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -108,12 +103,12 @@ public class SettingsActivity extends Activity {
 
         // ---------------- 磁贴 ----------------
         heading(root, "控制中心磁贴");
-        body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → 等约 0.6 秒 → 截当前屏幕"
-                + " → 交给蜜蜂记账识别记账。\n\n"
+        body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → **立刻**截当前屏幕"
+                + " → 交给蜜蜂记账识别记账（不等待，收面板命令一发出就截）。\n\n"
                 + "截屏有两条路，都走系统真实截图流程（有动画、进相册）：\n"
                 + "① 「截屏服务」（无障碍）直调系统截屏动作——**主路径，最快最稳**；\n"
-                + "② 关着的话退回 root 模拟「电源键 + 音量下」（这条会和面板收起动画抢时间，"
-                + "等待时长会被抬到 500ms 下限）。\n\n"
+                + "② 没开的话退回 root 模拟「电源键 + 音量下」。这条偶尔会有一条命令不生效、"
+                + "要重试一次，所以建议把①开着（模块会自己帮你开）。\n\n"
                 + "**平时的普通截图不会再触发识别**，只有点这个磁贴那一次会。\n"
                 + "连着点几次也能一张不漏地分别记账。");
         button(root, "添加「记账截图」磁贴", new View.OnClickListener() {
@@ -203,15 +198,22 @@ public class SettingsActivity extends Activity {
                 + "数字直接读蜜蜂记账自己的数据库，与它统计页的口径一致"
                 + "（跟随账本的自定义每月起始日、周一起算、剔除「不计入收支」的记账）。\n\n"
                 + "在蜜蜂记账里增删改账目，或手动记一笔，小部件都会在几秒内跟着更新。");
-        button(root, "把「记账支出」放到桌面", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                requestAddWidget();
-            }
-        });
-        body(root, "Android 不允许应用自己往桌面塞小组件，只能由系统弹一个确认框、你点确认；"
-                + "部分桌面（比如小米）连这个框也不支持。上面这个按钮会先试一次，"
-                + "不行就把手动步骤告诉你——小组件本身照常可用。");
+        // v2.20：把原来那个「把「记账支出」放到桌面」按钮**去掉了**。
+        //
+        // 原因：那个按钮调的是 AppWidgetManager.requestPinAppWidget，前提是桌面实现了
+        // "钉住小组件"这套接口。小米桌面（以及不少第三方桌面）会返回"支持"，
+        // 但**点了完全没反应**——属于系统的坑，不是我们没调对。
+        //
+        // 而"把小组件放到桌面"这件事 **root 也做不到**：桌面是另一个应用（启动器），
+        // 往它桌面上摆东西归它自己的 AppWidgetHost 管，没有任何 shell / root 接口
+        // （`cmd appwidget` 只管绑定权限，管不了摆放）。
+        //
+        // 所以干脆不给按钮了——留一个点了没反应的按钮比不给更糟。
+        body(root, "**添加方法**（应用没法自己放，root 也不行）：\n"
+                + "回到桌面 → 长按空白处 → 点「添加小部件」（小米里可能叫「添加工具」）→ "
+                + "找到「记账支出」→ 按住拖到桌面上。\n\n"
+                + "之所以要手动，是因为往桌面摆小组件是**桌面应用自己的事**，"
+                + "Android 没有给任何应用（包括有 root 的）提供这个接口。");
 
         final TextView alphaLabel = new TextView(this);
         alphaLabel.setTextSize(14f);
@@ -273,7 +275,9 @@ public class SettingsActivity extends Activity {
                 + "**改了配置不生效**\n"
                 + "点上面的「重启蜜蜂记账」，hook 只在它启动时注入。\n\n"
                 + "**截到的图里带着控制中心**\n"
-                + "把等待时长调大一档。\n\n"
+                + "理论上不该出现：收面板一发出就截屏，而且截屏走的是系统动作、不挑面板状态。\n"
+                + "真拍到了说明这台机器收面板比截屏慢——那就得改成「等系统确认面板已收起再截」，"
+                + "而不是拍脑袋等一个固定毫秒数。请把截图发我。\n\n"
                 + "**小部件显示灰色**\n"
                 + "说明蜜蜂记账的进程没在跑，此时显示的是上次的数值；打开一次它就会恢复实时。");
     }
@@ -529,47 +533,12 @@ public class SettingsActivity extends Activity {
         }, "bee-diag").start();
     }
 
-    /**
-     * 尝试把小组件"钉"到桌面。
-     *
-     * <p>前提说清楚：**Android 不允许应用直接把小组件放到桌面**，只能调用系统提供的
-     * "钉住"接口弹一个确认框，由用户点确认。而且这个接口**部分桌面（如小米）根本不支持**
-     * （{@code isRequestPinAppWidgetSupported()} 返回 false），那就只能手动长按桌面添加。
-     *
-     * <p>所以这里两条路都走：支持就弹框；不支持或失败，就把手动步骤明确告诉用户——
-     * 而不是只丢一句"请手动添加"。
-     */
-    private void requestAddWidget() {
-        try {
-            AppWidgetManager mgr = AppWidgetManager.getInstance(this);
-            boolean supported = Build.VERSION.SDK_INT >= 26
-                    && mgr.isRequestPinAppWidgetSupported();
-            Logx.i("[settings] requestPinAppWidget supported=" + supported);
-            if (supported) {
-                ComponentName cn = new ComponentName(this, ExpenseWidgetProvider.class);
-                mgr.requestPinAppWidget(cn, null, null);
-                Toast.makeText(this, "请在系统弹框里点「添加」", Toast.LENGTH_LONG).show();
-                return;
-            }
-            showManualAddHint("这个桌面不支持应用直接添加小组件");
-        } catch (Throwable t) {
-            Logx.e("[settings] requestPinAppWidget failed", t);
-            showManualAddHint("自动添加失败");
-        }
-    }
-
-    private void showManualAddHint(String why) {
-        new AlertDialog.Builder(this)
-                .setTitle("手动添加小组件")
-                .setMessage(why + "，需要你手动加一下：\n\n"
-                        + "1. 回到桌面，长按空白处\n"
-                        + "2. 点「添加小部件」（小米里可能叫「添加工具」）\n"
-                        + "3. 找到「记账支出」，按住拖到桌面上\n\n"
-                        + "这是 Android 的限制——应用不能自己往桌面塞小组件，"
-                        + "只能由你在系统界面里确认添加。小组件本身照常工作。")
-                .setPositiveButton("知道了", null)
-                .show();
-    }
+    // v2.20 删除：requestAddWidget() / showManualAddHint()
+    //
+    // 它们调的是 AppWidgetManager.requestPinAppWidget。小米桌面会返回"支持"，
+    // 但点了**完全没反应**；而 root 也没有接口能把小组件摆到桌面（那是桌面应用自己的
+    // AppWidgetHost 的职责，`cmd appwidget` 只管绑定权限）。留一个点了没反应的按钮
+    // 比不给更糟，所以按钮和这两个方法一起删掉，改成在正文里直接写清楚手动步骤。
 
     private void requestAddTile() {
         if (Build.VERSION.SDK_INT < 33) {
