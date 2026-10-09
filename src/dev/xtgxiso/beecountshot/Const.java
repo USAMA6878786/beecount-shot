@@ -176,6 +176,21 @@ public final class Const {
     public static final long ARM_GRACE_MS = 14000L;
 
     /**
+     * 第一条截屏命令的确认窗口（毫秒）。后面几条命令仍用 {@link #SHOT_TRY_MS}。
+     *
+     * <p>真机实测：命令**生效时**，截图文件稳定在 **350ms 左右**就落盘了；
+     * **没生效时**，等到 2 秒也永远不会有。分布是双峰、中间是空的。
+     *
+     * <p>所以第一条没必要等满 2 秒——等 1 秒足够判断"这条没戏"，可以把
+     * "第一次没生效"那种卡顿从 2.1 秒压到 1 秒左右。
+     * 窗口是 350ms 的近三倍，不会误判成"没出图"而导致多截一张。
+     */
+    public static final long SHOT_FIRST_TRY_MS = 1000L;
+
+    /** 后续候选命令的确认窗口。 */
+    public static final long SHOT_TRY_MS = 2000L;
+
+    /**
      * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
      *
      * <p>这个 flag 在 Android 里是**隐藏 API**，公开 SDK 的 android.jar 里没有这个常量，
