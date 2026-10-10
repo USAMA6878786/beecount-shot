@@ -250,23 +250,6 @@ public class ShotTileService extends TileService {
                         //
                         // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
                         final boolean a11yReady = ShotAccessibilityService.isReady();
-                        if (!a11yReady) {
-                            // 无障碍没开 —— 用 root 帮用户把它打开。
-                            //
-                            // 这是**唯一**能让整个功能又快又稳的办法：无障碍直调系统截屏动作
-                            // 不走按键注入，而 root 注入按键偶尔会完全没生效、白等 1~2 秒
-                            // （就是"中间某一次卡住"的原因）。
-                            //
-                            // 覆盖安装模块后系统会自动关掉无障碍服务，用户往往不会再去开一次，
-                            // 于是一直退在慢的路上。模块有 root，就自己把它办了。
-                            //
-                            // 本次点击仍然走 root；服务连上之后，**下一次点击**就走快路了。
-                            try {
-                                RootShell.ensureAccessibilityEnabled();
-                            } catch (Throwable t) {
-                                Logx.w("[tile] ensure a11y failed: " + t.getMessage());
-                            }
-                        }
                         Logx.i("[tile] 立刻截屏（不等待）a11y=" + a11yReady);
                         final long shotAt = System.currentTimeMillis();
 
@@ -294,17 +277,40 @@ public class ShotTileService extends TileService {
                         boolean sent = false;
                         if (a11yReady) {
                             RootShell.markNow();   // 一次 su，用来判断"图到底出来了没有"
-                            sent = ShotAccessibilityService.shootNow();
-                            if (sent && !RootShell.waitForNewShot(1500L)) {
-                                // 系统受理了但没等到图 —— 退回 root，双保险
-                                Logx.w("[tile] a11y 触发了但没等到新图 -> 退回 root 模拟按键");
-                                sent = false;
+                            boolean accepted = ShotAccessibilityService.shootNow();
+                            long w0 = System.currentTimeMillis();
+                            boolean landed = accepted && RootShell.waitForNewShot(1500L);
+                            // 无障碍这条路的成败以前只写了个 accepted，没有明确的成败行，
+                            // 导致日志里一大堆 a11y 点击看起来像"没有出图记录"，没法排查。
+                            Logx.i("[tile] a11y 直调：accepted=" + accepted + " 出图=" + landed
+                                    + "（等待 " + (System.currentTimeMillis() - w0) + "ms）");
+                            if (accepted && !landed) {
+                                Logx.w("[tile] a11y 受理了但没等到新图 -> 退回 root 模拟按键");
                             }
+                            sent = landed;
                         } else {
                             Logx.i("[tile] 无障碍未就绪 -> 走 root 模拟按键");
                         }
                         if (!sent) {
                             sent = RootShell.takeScreenshotViaRoot();
+                        }
+
+                        // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
+                        //
+                        // 原来它写在截屏之前的关键路径上，实测每次白花 210ms
+                        // （`ensure a11y enabled -> ALREADY`），而这次点击无论如何都还是走
+                        // root——它只影响"下一次"。挪走之后这一段直接省下来。
+                        if (!a11yReady) {
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        RootShell.ensureAccessibilityEnabled();
+                                    } catch (Throwable t) {
+                                        Logx.w("[tile] ensure a11y failed: " + t.getMessage());
+                                    }
+                                }
+                            }, "bee-ensure-a11y").start();
                         }
 
                         // 把结果写回磁贴副标题。这样"点了没反应"永远有一个看得见的落点：
