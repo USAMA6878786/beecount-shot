@@ -276,10 +276,11 @@ public class ShotTileService extends TileService {
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
                         if (a11yReady) {
-                            RootShell.markNow();   // 一次 su，用来判断"图到底出来了没有"
+                            String mark = RootShell.markNow();   // 一次 su，用来判断"图到底出来了没有"
                             boolean accepted = ShotAccessibilityService.shootNow();
                             long w0 = System.currentTimeMillis();
-                            boolean landed = accepted && RootShell.waitForNewShot(1500L);
+                            boolean landed = accepted && RootShell.waitForNewShot(1500L, mark);
+                            RootShell.clearMark(mark);
                             // 无障碍这条路的成败以前只写了个 accepted，没有明确的成败行，
                             // 导致日志里一大堆 a11y 点击看起来像"没有出图记录"，没法排查。
                             Logx.i("[tile] a11y 直调：accepted=" + accepted + " 出图=" + landed
