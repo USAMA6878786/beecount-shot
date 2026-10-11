@@ -121,14 +121,38 @@ public final class RootShell {
      * （**不动用户已经开的其它服务**），再把 {@code accessibility_enabled} 置 1。
      * 整段在一次 su 里做完。已经开着的直接跳过，不重复写。
      */
+    /** 上次强制重绑无障碍服务的时间（节流用）。 */
+    private static volatile long lastA11yRebindAt = 0L;
+
     public static void ensureAccessibilityEnabled() {
         final String comp = "dev.xtgxiso.beecountshot/"
                 + "dev.xtgxiso.beecountshot.ShotAccessibilityService";
+        // 节流：强制重绑要连写两次系统设置，别每次点击都来一遍。
+        long now = System.currentTimeMillis();
+        if (now - lastA11yRebindAt < 5 * 60 * 1000L) {
+            Logx.i("[root] ensure a11y skipped（刚试过不久）");
+            return;
+        }
+        lastA11yRebindAt = now;
+
+        // 分两种情况：
+        //
+        //   ① 设置里没有我们 —— 追加进去（首次开启）。
+        //
+        //   ② 设置里**有**我们、但服务还是没连上 —— **先摘掉再写回**。
+        //      因为 `settings put` 只有在"值发生变化"时才会让 AccessibilityManagerService
+        //      重新绑定服务。真机日志里能对上：只有 `ADDED`（值变了）那一次之后出现了
+        //      `[a11y] service connected`，之后值再没变过，服务就一直没连上。
+        //      制造一次值变化，把它拽回来。只动我们自己的那一项，不碰用户开的其它服务。
         String cmd = ""
                 + "C=" + comp + "; "
                 + "V=$(settings get secure enabled_accessibility_services 2>/dev/null); "
                 + "case \":$V:\" in "
-                + "  *\":$C:\"*) echo ALREADY ;; "
+                + "  *\":$C:\"*) "
+                + "     N=$(echo \":$V:\" | sed \"s|:$C:|:|\" | sed -e \"s|^:||\" -e \"s|:$||\"); "
+                + "     settings put secure enabled_accessibility_services \"$N\"; "
+                + "     settings put secure enabled_accessibility_services \"$V\"; "
+                + "     echo REBOUND ;; "
                 + "  *) if [ -z \"$V\" ] || [ \"$V\" = null ]; then N=\"$C\"; "
                 + "     else N=\"$V:$C\"; fi; "
                 + "     settings put secure enabled_accessibility_services \"$N\" && echo ADDED ;; "
@@ -184,7 +208,20 @@ public final class RootShell {
     }
 
     /** 截屏自检用的"时间标记文件"，放在任何截图目录之外，免得把自己算进去。 */
-    private static final String SHOT_MARK = "/data/local/tmp/bee_shot_mark";
+    private static final String SHOT_MARK_PREFIX = "/data/local/tmp/bee_shot_mark";
+
+    /**
+     * 生成一个**本次调用专属**的时间标记文件路径。
+     *
+     * <p>为什么不能用一个固定的路径：用户连点两下时会有两个线程同时跑截屏，
+     * 它们共用一个标记文件会互相踩——后一次 {@code rm/touch} 会让前一次**已经拍到**的图
+     * 变成"比标记旧"而认不出来，前一次于是误判成"没出图"、再补发一条命令，就多截了一张。
+     * 真机日志里连点两次那次：两个线程都报"出图"，但全天只多出一张图——
+     * 就是共用标记导致的（两个线程认到的是同一张）。
+     */
+    private static String newMarkPath() {
+        return SHOT_MARK_PREFIX + "_" + Long.toHexString(System.nanoTime());
+    }
 
     /**
      * 候选截屏命令，按可靠性从高到低排，命中一条就停——**绝不连发**，否则会计两笔账。
@@ -229,6 +266,15 @@ public final class RootShell {
      * 出来了才算数，不出来再换下一条。全部失败返回 false，让调用方退回无障碍。
      */
     public static boolean takeScreenshotViaRoot() {
+        final String mark = newMarkPath();
+        try {
+            return takeScreenshotWithMark(mark);
+        } finally {
+            exec("rm -f " + mark, 5000L);
+        }
+    }
+
+    private static boolean takeScreenshotWithMark(String mark) {
         for (int i = 0; i < SHOT_CMDS.length; i++) {
             // 第一条命令顺带把"时间标记"立起来——两条命令合成**一次 su**。
             // su 是起一个新进程，每次约 150~250ms，能省就省。
@@ -241,7 +287,7 @@ public final class RootShell {
             // 用 -newer 而不是 -newermt：前者是 POSIX 标准，toybox / busybox 都认，
             // 后者只有 busybox/GNU 认，小米上是 toybox，用它会永远查不到东西。
             String cmd = (i == 0)
-                    ? "rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null; "
+                    ? "rm -f " + mark + "; touch " + mark + " 2>/dev/null; "
                             + SHOT_CMDS[0] + " 2>&1"
                     : SHOT_CMDS[i] + " 2>&1";
 
@@ -254,7 +300,7 @@ public final class RootShell {
             // 第一条命令只等 1 秒（实测生效时 350ms 就落盘了），后面几条才等满 2 秒。
             long t1 = System.currentTimeMillis();
             long window = (i == 0) ? Const.SHOT_FIRST_TRY_MS : Const.SHOT_TRY_MS;
-            if (waitForScreenshot(window)) {
+            if (waitForScreenshot(window, mark)) {
                 Logx.i("[root] screenshot landed via cmd[" + i + "] —— 发命令到确认出图 "
                         + (System.currentTimeMillis() - t1) + "ms，本轮共 "
                         + (System.currentTimeMillis() - t0) + "ms");
@@ -267,9 +313,18 @@ public final class RootShell {
         return false;
     }
 
-    /** 立一个"现在"的时间标记；之后用 {@link #waitForNewShot} 判断有没有更新的图出现。 */
-    public static void markNow() {
-        exec("rm -f " + SHOT_MARK + "; touch " + SHOT_MARK + " 2>/dev/null", 5000L);
+    /** 立一个"现在"的时间标记，返回它的路径；之后用 {@link #waitForNewShot} 判断有没有更新的图。 */
+    public static String markNow() {
+        String mark = newMarkPath();
+        exec("rm -f " + mark + "; touch " + mark + " 2>/dev/null", 5000L);
+        return mark;
+    }
+
+    /** 清掉标记文件。 */
+    public static void clearMark(String mark) {
+        if (mark != null) {
+            exec("rm -f " + mark, 5000L);
+        }
     }
 
     /**
@@ -278,8 +333,8 @@ public final class RootShell {
      * <p>给"无障碍直调截屏"那条路做确认用：受理了不代表图一定出来，
      * 没出来就退回 root 模拟按键。
      */
-    public static boolean waitForNewShot(long timeoutMs) {
-        return waitForScreenshot(timeoutMs);
+    public static boolean waitForNewShot(long timeoutMs, String mark) {
+        return waitForScreenshot(timeoutMs, mark);
     }
 
     /**
@@ -288,7 +343,7 @@ public final class RootShell {
      * <p>从 400ms 缩到 250ms：每轮要起一个 su 去跑 find，慢是慢在这上面；
      * 缩短间隔能更早发现出图，而单次 find 现在也便宜了（见 {@link #newScreenshotSinceMark()}）。
      */
-    private static boolean waitForScreenshot(long timeoutMs) {
+    private static boolean waitForScreenshot(long timeoutMs, String mark) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
@@ -296,14 +351,14 @@ public final class RootShell {
             } catch (InterruptedException e) {
                 return false;
             }
-            if (newScreenshotSinceMark()) {
+            if (newScreenshotSinceMark(mark)) {
                 return true;
             }
         }
         return false;
     }
 
-    private static boolean newScreenshotSinceMark() {
+    private static boolean newScreenshotSinceMark(String mark) {
         // 除了各厂商的 Screenshots 目录，再兜上 Pictures / DCIM 两级：
         // 万一 ROM 把图放到别处（或目录根本不存在），也不至于误判成"没截到"。
         // 窗口只有两秒，这段时间里冒出来的新文件基本只可能是刚截的图。
@@ -315,7 +370,7 @@ public final class RootShell {
         // 所以深度 1 足够。
         String dirs = "/sdcard/Pictures/Screenshots /sdcard/DCIM/Screenshots"
                 + " /sdcard/Screenshots /sdcard/Pictures /sdcard/DCIM";
-        Result r = exec("find " + dirs + " -maxdepth 1 -type f -newer " + SHOT_MARK
+        Result r = exec("find " + dirs + " -maxdepth 1 -type f -newer " + mark
                 + " 2>/dev/null | head -3", 8000L);
         return r.out != null && r.out.trim().length() > 0;
     }
