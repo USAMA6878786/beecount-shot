@@ -188,6 +188,7 @@ public class ShotTileService extends TileService {
         // 顺手确保常驻服务在跑（用户在后台点了磁贴时这里多半会被系统拒掉，
         // 但包在 try 里没副作用；真正能把服务拉起来的时机是打开设置页）。
         if (Prefs.keepAlive(app)) {
+            KeepAliveService.ensureChannel(app);   // 幂等、一次进程只做一次
             KeepAliveService.start(app);
         }
 
