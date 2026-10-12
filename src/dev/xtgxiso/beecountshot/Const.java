@@ -235,7 +235,6 @@ public final class Const {
     public static final String OUTCOME_LOG_MARKER = "落库完成";
 
     /** 上面那条日志里表示"识别出几笔账"的字段名。 */
-    public static final String OUTCOME_BILLS_FIELD = "成功=";
 
     /** Dart 日志在 SharedPreferences 里的 key。 */
     public static final String K_APP_LOGS = "flutter.app_logs";
