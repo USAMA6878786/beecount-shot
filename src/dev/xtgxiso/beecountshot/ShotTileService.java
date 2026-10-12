@@ -226,12 +226,14 @@ public class ShotTileService extends TileService {
                         // 这一步和下面的"收面板"合并成**一次 su**：每调一次 su 就是起一个
                         // 新进程（实测 150~250ms），分开做等于白等两百毫秒，而这段时间
                         // 直接算在"点击→截屏"的延迟里。
+                        // 标记路径先备好，交给 armAndCollapse 顺带立起来（省一次 su）
+                        final String mark = RootShell.newMark();
                         RootShell.Result r = RootShell.armAndCollapse(Const.ACTION_ARM, HostInfo.pkg(),
                                 "--el " + Const.EXTRA_UNTIL + " " + until
                                         + " --ez " + Const.EXTRA_PRECISE + " "
                                         + (Prefs.precisePartial(app) ? "true" : "false"),
                                 Intent.FLAG_RECEIVER_FOREGROUND
-                                        | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
+                                        | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND, mark);
                         long spent = System.currentTimeMillis() - t0;
                         Logx.i("[tile] root stage finished in " + spent + "ms, exit=" + r.exit);
 
@@ -276,7 +278,6 @@ public class ShotTileService extends TileService {
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
                         if (a11yReady) {
-                            String mark = RootShell.markNow();   // 一次 su，用来判断"图到底出来了没有"
                             boolean accepted = ShotAccessibilityService.shootNow();
                             long w0 = System.currentTimeMillis();
                             boolean landed = accepted && RootShell.waitForNewShot(1500L, mark);
