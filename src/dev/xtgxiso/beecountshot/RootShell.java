@@ -465,9 +465,9 @@ public final class RootShell {
     // ---------------------------------------------------------------- 截图文件定位与删除
 
     /**
-     * 找出最近生成的截图文件（按修改时间倒序取第一个满足条件的）。
+     * 找出 {@code sinceMs} 之后生成的**所有**截图（新的在前）。
      *
-     * <p>为什么用"列出目录里最新的文件"而不是别的方式：模块 App 没有相册读权限，
+     * <p>为什么用"直接列目录"而不是别的方式：模块 App 没有相册读权限，
      * 拿不到 MediaStore 里的内容；而宿主进程知道确切路径，但那边没有可靠的回传通道。
      * 我们有 root，直接看文件系统最直接。
      *
@@ -476,7 +476,15 @@ public final class RootShell {
      *
      * @param sinceMs 只接受修改时间不早于这个时刻的文件（毫秒）
      */
-    public static String findNewestScreenshot(long sinceMs) {
+    /**
+     * 列出 {@code sinceMs} 之后出现的**所有**截图（新的在前）。
+     *
+     * <p>为什么要列表而不是只给最新那张：连点多下时，每个清理线程原先都盯着"比本次点击
+     * 更新的最新一张"——结果大家抢到的是同一张，**更早的那几张谁都不管**。
+     * 真机日志里因此有 5 张放行过的图一直没被删掉。
+     */
+    public static java.util.List<String> findScreenshotsSince(long sinceMs) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
         StringBuilder dirs = new StringBuilder();
         for (int i = 0; i < Const.SCREENSHOT_DIRS.length; i++) {
             dirs.append('"').append(Const.SCREENSHOT_DIRS[i]).append("\" ");
@@ -488,7 +496,7 @@ public final class RootShell {
         Result r = exec(cmd, 15000L);
         if (r.out == null || r.out.length() == 0) {
             Logx.w("[clean] file scan returned nothing (exit=" + r.exit + ")");
-            return null;
+            return out;
         }
         // 只比触发时刻早 1 秒以内的都算，避免把用户刚手动截的另一张算进来。
         long lowerBound = sinceMs - 1000L;
@@ -513,12 +521,11 @@ public final class RootShell {
                 Logx.w("[clean] skip unsafe candidate: " + path);
                 continue;
             }
-            Logx.i("[clean] newest candidate: " + path + " (mtime=" + mtime + ")");
-            return path;
+            out.add(path);
         }
-        Logx.w("[clean] no candidate newer than " + sinceMs + " among "
-                + lines.length + " entries");
-        return null;
+        Logx.i("[clean] " + out.size() + " 张比 " + sinceMs + " 新的截图（原始 "
+                + lines.length + " 条）");
+        return out;
     }
 
     /**
