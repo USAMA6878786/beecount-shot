@@ -148,17 +148,18 @@ public class SettingsActivity extends Activity {
         // 「收起面板」这个动作本身**保留**（不收的话控制面板会出现在截图里）。
 
         // ---------------- 自动删截图 ----------------
-        heading(root, "记账成功后删除截图");
-        body(root, "打开后：点磁贴截的那张图，如果**被成功识别并记了账**，会自动从相册和存储里删掉。\n\n"
-                + "怎么判断有没有识别成功：蜜蜂记账每处理完一张图会写一条"
-                + "「AI 识别 + 落库完成 … 成功=N 笔」，模块拿它跟放行顺序一一对上——"
-                + "N>0 的删掉，N=0（未识别到账单）的保留。连点几次、成功失败交替也没问题。\n\n"
+        heading(root, "识别完成后删除截图");
+        body(root, "打开后：**凡是点磁贴截的图，蜜蜂记账识别完就删**——"
+                + "不管有没有识别出账单。\n\n"
+                + "之所以都能删：会走到这一步的图只可能是点磁贴截的那几张，"
+                + "而蜜蜂记账每处理完一张就写一条「AI 识别 + 落库完成」日志——"
+                + "看到这条说明它**已经把图读完识别完了**，这张图对你就没用了。\n\n"
                 + "另外还有几道硬门槛，缺一不删：\n"
                 + "① 这张图确实是闸门放行给蜜蜂记账的那一张\n"
                 + "② 路径必须是图片、名字带截图字样、不在相机目录、不含特殊字符\n\n"
-                + "拿不准时一律保留——宁可漏删，绝不误删。");
+                + "没识别完的**不会提前删**——只会一直等它出结果；等不到就一直留着。");
         CheckBox autoDelete = new CheckBox(this);
-        autoDelete.setText("记账成功后删除对应的截图");
+        autoDelete.setText("识别完成后删除对应的截图");
         autoDelete.setChecked(Prefs.autoDelete(this));
         autoDelete.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
@@ -170,7 +171,7 @@ public class SettingsActivity extends Activity {
         root.addView(autoDelete);
 
         CheckBox precise = new CheckBox(this);
-        precise.setText("连点多次时，区分「识别成功」和「未识别到账单」分别处理");
+        precise.setText("日志读不到时的兜底：按「先截的先出结果」推断着删");
         precise.setChecked(Prefs.precisePartial(this));
         precise.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
@@ -180,15 +181,13 @@ public class SettingsActivity extends Activity {
             }
         });
         root.addView(precise);
-        body(root, "正常情况下用不到这个开关：蜜蜂记账每处理完一张图会写一条"
-                + "「AI 识别 + 落库完成 … 成功=N 笔」的日志，模块拿它跟放行的先后顺序一一对上，"
-                + "**精确知道哪张有账目、哪张没识别**，N=0 的那张直接保留。\n\n"
-                + "万一以后它改了日志措辞、这条读不到了，才会退回推断：\n\n"
+        body(root, "**正常情况用不到这个开关。** 蜜蜂记账每处理完一张图会写一条"
+                + "「AI 识别 + 落库完成」日志，模块按这条日志跟放行的先后顺序一一对上，"
+                + "就知道哪张已经识别完了——这是上面的正常路径。\n\n"
+                + "万一以后蜜蜂记账改了日志措辞、这条读不到了，才会退回按「自动记账成功」的次数推断：\n\n"
                 + "**打开**——按「先截的先出结果」推断，删前面那几张。"
-                + "这依赖蜜蜂记账按顺序依次处理；万一失败的是中间那张（比如第 2 张失败、"
-                + "第 3 张成功），就会删错。\n\n"
-                + "**关掉**——最保守：只要这一批里有一张没成功，整批都保留。"
-                + "想要「绝不误删」就关掉它。");
+                + "这依赖蜜蜂记账按顺序依次处理；万一没成的是中间那张，就会删错。\n\n"
+                + "**关掉**——最保守：这一批里只要有一张没成功，整批都留着，等你手动处理。");
 
         // ---------------- 桌面小组件 ----------------
         heading(root, "桌面小组件");
