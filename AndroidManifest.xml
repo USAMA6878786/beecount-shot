@@ -23,6 +23,18 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+        通知权限。**必须声明**，否则在 Android 13+（targetSdk ≥ 33）的系统设置里，
+        这个应用的通知总开关是**灰的、点不动**——因为系统认为这个应用压根不该发通知。
+
+        有意思的是：**不授予它反而更好看**。Android 13+ 有明确规定，用户拒绝通知权限后，
+        前台服务的提示不再出现在通知栏，只在「任务管理器」里可见。也就是说：
+          · 授予   → 通知栏里有一条静默条目（状态栏无图标），可以再单独关掉渠道；
+          · 不授予 → 通知栏里什么都没有，服务照常常驻。
+        两条路都能用，用户自己挑。
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
         必须声明。模块 targetSdk 35，受 Android 11+ 的包可见性过滤约束：不声明的话
         getLaunchIntentForPackage("com.tntlikely.beecount") 一定返回 null，
         表现就是"打开蜜蜂记账"提示找不到应用。
