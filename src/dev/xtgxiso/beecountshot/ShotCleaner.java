@@ -69,9 +69,11 @@ final class ShotCleaner {
             } catch (Throwable ignored) {
             }
 
-            String candidate = null;
-            // 宿主有没有确认过"这张图确实是闸门放行给蜜蜂记账的"——超时兜底要用它做安全闸。
-            boolean candidateConfirmed = false;
+            // 已经处理完的、以及"宿主确认过身份但还没出结果"的。
+            // 用集合而不是单个变量：连点多下时一次会有好几张图要管。
+            final java.util.Set<String> handled = new java.util.HashSet<String>();
+            final java.util.Set<String> confirmed = new java.util.LinkedHashSet<String>();
+            long lastScan = 0L;
             long deadline = System.currentTimeMillis() + MAX_WAIT_MS;
 
             while (System.currentTimeMillis() < deadline) {
@@ -81,50 +83,66 @@ final class ShotCleaner {
                     return;
                 }
 
-                // ---- 兜底：没等到推送就主动问一次 ----
-                if (candidate == null) {
-                    candidate = RootShell.findNewestScreenshot(shotTime);
-                    if (candidate != null) {
-                        Logx.i("[clean] candidate: " + candidate
-                                + " (name=" + RootShell.baseName(candidate) + ")");
+                // ---- 兜底：把"比本次点击新的截图"**全部**过一遍 ----
+                //
+                // 这里以前只取"最新的那一张"。连点多下时，每个清理线程都盯着同一张最新图，
+                // 更早的那些谁都不管——真机日志里因此有 5 张放行过的图一直没被删。
+                // 现在逐个确认。扫描本身要开一次 root shell，所以限流到 5 秒一次。
+                long now = System.currentTimeMillis();
+                if (now - lastScan < 5000L) {
+                    try {
+                        Thread.sleep(300L);
+                    } catch (InterruptedException ignored) {
                     }
+                    continue;
                 }
-                if (candidate != null) {
-                    ShotBridge.Answer answer = ShotBridge.query(ctx, candidate, QUERY_TIMEOUT_MS);
+                lastScan = now;
+
+                java.util.List<String> cands = RootShell.findScreenshotsSince(shotTime);
+                for (int i = 0; i < cands.size(); i++) {
+                    String c = cands.get(i);
+                    if (handled.contains(c)) {
+                        continue;
+                    }
+                    ShotBridge.Answer answer = ShotBridge.query(ctx, c, QUERY_TIMEOUT_MS);
                     if (!answer.received) {
                         Logx.w("[clean] 宿主无回应（模块可能没被注入 / 作用域没勾对）");
-                    } else {
-                        Logx.i("[clean] query SUCCESS=" + answer.success
-                                + " deletedByHost=" + answer.deleted
-                                + " successTs=" + answer.successTs
-                                + " activityAlive=" + answer.activityAlive);
-                        if (answer.processed) {
-                            candidateConfirmed = true;
-                        }
-                        if (handleIfDecided(ctx, answer, "query")) {
-                            return;
-                        }
+                        continue;
+                    }
+                    Logx.i("[clean] query " + RootShell.baseName(c)
+                            + " SUCCESS=" + answer.success + " processed=" + answer.processed
+                            + " deletedByHost=" + answer.deleted);
+                    if (handleIfDecided(ctx, answer, "query")) {
+                        handled.add(c);
+                        continue;
+                    }
+                    if (answer.processed) {
+                        // 宿主确认过身份（这张确实是我们闸门放行给蜜蜂记账的），只是还没出结果
+                        confirmed.add(c);
                     }
                 }
             }
-            // ---- 超时兜底：不再一律保留 ----
+            // ---- 超时兜底：把"确认过身份"的**全部**删掉 ----
             //
-            // 为什么要改：连点时蜜蜂记账自己会**防抖**（它日志里有"防抖跳过：距离上次处理仅 21ms"），
-            // 两次挨着的截图它可能只处理一次、只写一条「落库完成」——另一张永远等不到结果，
-            // 于是永远留在相册里。真机日志里 9 次"超时保留"就是这么来的。
+            // 为什么要这样：连点时蜜蜂记账自己会**防抖**（它日志里有"防抖跳过：距离上次处理
+            // 仅 21ms"），两次挨着的截图它可能只处理一次、只写一条「落库完成」——另一张
+            // 永远等不到结果，于是永远留在相册里。真机日志里 9 次"超时保留"就是这么来的。
             //
-            // 等满 60 秒之后，任何该读这张图的动作早就读完了，所以删是安全的。
-            // 但仍然**只删宿主确认过身份的那张**（processed=true = 这张图确实是我们闸门
+            // 等满 60 秒之后，任何该读这些图的动作早就读完了，所以删是安全的。
+            // 但仍然**只删宿主确认过身份的那些**（processed=true = 这张确实是我们闸门
             // 放行给蜜蜂记账的），避免误删用户自己手动截的图。
-            if (candidate != null && candidateConfirmed
-                    && RootShell.isSafeScreenshotPath(candidate)) {
+            int swept = 0;
+            for (String c : confirmed) {
+                if (handled.contains(c) || !RootShell.isSafeScreenshotPath(c)) {
+                    continue;
+                }
                 Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果，"
-                        + "但宿主确认过这张是闸门放行的 -> 直接删");
-                doDelete(ctx, candidate, 0L);
-                return;
+                        + "但宿主确认过这张是闸门放行的 -> 直接删：" + RootShell.baseName(c));
+                doDelete(ctx, c, 0L);
+                swept++;
             }
-            Logx.i("[clean] 超时仍未拿到'可删'结论（" + MAX_WAIT_MS + "ms），截图保留"
-                    + "——宁可漏删，绝不误删");
+            Logx.i("[clean] 超时结束（" + MAX_WAIT_MS + "ms）：确认过身份 " + confirmed.size()
+                    + " 张，超时补删 " + swept + " 张，其余保留");
         } catch (Throwable t) {
             Logx.e("[clean] unexpected failure; screenshot kept", t);
         }
