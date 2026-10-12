@@ -37,6 +37,20 @@ final class ShotCleaner {
     private static final long MAX_WAIT_MS = 60000L;
 
     /**
+     * "按时间认领自己那一张"的窗口上界（相对本次点击时刻）。
+     *
+     * <p>为什么需要它：<b>蜜蜂记账自己会防抖</b>。真机数据：14 次点击 → 14 张截图，
+     * 但宿主只收到 10 次上报（{@code pass granted=14 / pass consumed=10 / live=8}）。
+     * <b>被防抖跳过的那几张永远不会出现在宿主的"放行清单"里</b>，于是"只删宿主确认过的"
+     * 这条规则对它们永远不成立——它们会一直躺在相册里。用户看到的"还剩一张"就是这么来的。
+     *
+     * <p>所以再加一条判据：**点下磁贴之后 6 秒内出现的截图，就是我们的**。
+     * 无障碍直调约 0.4 秒落盘，最慢的 root 兜底也不到 4 秒，6 秒留足余量，
+     * 又不会把用户随手手动截的图卷进来（那得在点磁贴后 6 秒内再手动截一张，概率极低）。
+     */
+    private static final long MINE_WINDOW_MS = 6000L;
+
+    /**
      * @param shotTime 本次截图流程的起始时刻（毫秒）。用来定位"本次触发后新增的成品文件"。
      */
     static void run(final Context ctx, final long shotTime) {
@@ -73,6 +87,8 @@ final class ShotCleaner {
             // 用集合而不是单个变量：连点多下时一次会有好几张图要管。
             final java.util.Set<String> handled = new java.util.HashSet<String>();
             final java.util.Set<String> confirmed = new java.util.LinkedHashSet<String>();
+            // "我们自己截的那一张"——按时间窗认领，见下面的说明。
+            final java.util.Set<String> mine = new java.util.LinkedHashSet<String>();
             long lastScan = 0L;
             long deadline = System.currentTimeMillis() + MAX_WAIT_MS;
 
@@ -98,12 +114,16 @@ final class ShotCleaner {
                 }
                 lastScan = now;
 
-                java.util.List<String> cands = RootShell.findScreenshotsSince(shotTime);
+                // 时间窗：点下磁贴之后几秒内冒出来的图，基本只可能是我们那一张。
+                // 上界给 6 秒——最快的无障碍直调约 0.4 秒落盘，最慢的 root 兜底也不到 4 秒。
+                java.util.List<String> cands =
+                        RootShell.findScreenshotsSince(shotTime, shotTime + MINE_WINDOW_MS);
                 for (int i = 0; i < cands.size(); i++) {
                     String c = cands.get(i);
                     if (handled.contains(c)) {
                         continue;
                     }
+                    mine.add(c);
                     ShotBridge.Answer answer = ShotBridge.query(ctx, c, QUERY_TIMEOUT_MS);
                     if (!answer.received) {
                         Logx.w("[clean] 宿主无回应（模块可能没被注入 / 作用域没勾对）");
@@ -131,18 +151,32 @@ final class ShotCleaner {
             // 等满 60 秒之后，任何该读这些图的动作早就读完了，所以删是安全的。
             // 但仍然**只删宿主确认过身份的那些**（processed=true = 这张确实是我们闸门
             // 放行给蜜蜂记账的），避免误删用户自己手动截的图。
+            // 两类都算"确认过是我们自己的"：
+            //   ① 宿主明确确认过身份（processed=true，闸门放行过的那张）；
+            //   ② 落在本次点击后 6 秒时间窗里的——**宿主没确认也不影响**，
+            //      因为蜜蜂记账的防抖会让一部分截图压根不上报。
+            java.util.Set<String> allMine = new java.util.LinkedHashSet<String>(confirmed);
+            allMine.addAll(mine);
+
             int swept = 0;
-            for (String c : confirmed) {
+            int sweptByTime = 0;
+            for (String c : allMine) {
                 if (handled.contains(c) || !RootShell.isSafeScreenshotPath(c)) {
                     continue;
                 }
-                Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果，"
-                        + "但宿主确认过这张是闸门放行的 -> 直接删：" + RootShell.baseName(c));
+                boolean byTime = !confirmed.contains(c);
+                Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果 -> 直接删"
+                        + (byTime ? "（按时间窗认领：点磁贴后 6 秒内出现的）" : "（宿主确认过身份）")
+                        + "：" + RootShell.baseName(c));
                 doDelete(ctx, c, 0L);
                 swept++;
+                if (byTime) {
+                    sweptByTime++;
+                }
             }
-            Logx.i("[clean] 超时结束（" + MAX_WAIT_MS + "ms）：确认过身份 " + confirmed.size()
-                    + " 张，超时补删 " + swept + " 张，其余保留");
+            Logx.i("[clean] 超时结束（" + MAX_WAIT_MS + "ms）：宿主确认 " + confirmed.size()
+                    + " 张、时间窗认领 " + mine.size() + " 张，共补删 " + swept
+                    + " 张（其中按时间认领 " + sweptByTime + " 张），其余保留");
         } catch (Throwable t) {
             Logx.e("[clean] unexpected failure; screenshot kept", t);
         }
