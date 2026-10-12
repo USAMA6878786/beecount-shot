@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.IBinder;
 
@@ -44,6 +45,66 @@ public class KeepAliveService extends Service {
     private static final String CHANNEL_ID = "beecount_shot_keepalive";
     private static final int NOTIF_ID = 1001;
 
+    /** 通知权限的请求码（设置页用）。 */
+    static final int REQ_NOTIF = 1001;
+
+    private static volatile boolean channelReady = false;
+
+    /**
+     * 确保通知渠道存在。**幂等、很便宜，可以在任何入口随手调**。
+     *
+     * <p>为什么不能只在 {@link #onCreate()} 里建：Android 的系统设置里，
+     * 一个应用**一个通知渠道都没有**的时候，"允许通知"那个总开关是灰的、点不动。
+     * 而渠道原来只在服务真的启动后才建——服务没起来（比如后台启动被系统拒了），
+     * 用户去系统设置里就会看到一个点不动的开关，像是模块坏了。
+     *
+     * <p>所以改成：设置页、点磁贴、开机广播、服务本身，谁的入口先到谁就把它建好。
+     */
+    static void ensureChannel(Context c) {
+        if (c == null || Build.VERSION.SDK_INT < 26 || channelReady) {
+            return;
+        }
+        try {
+            NotificationManager nm =
+                    (NotificationManager) c.getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) {
+                return;
+            }
+            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "常驻运行",
+                    NotificationManager.IMPORTANCE_MIN);
+            ch.setDescription("让「记账截图」随时保持响应（点磁贴不再冷启动）。"
+                    + "设为「静默」后状态栏不会有图标。");
+            ch.setShowBadge(false);
+            ch.setSound(null, null);
+            ch.enableVibration(false);
+            ch.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
+            nm.createNotificationChannel(ch);
+            channelReady = true;
+            Logx.i("[keepalive] notification channel ready");
+        } catch (Throwable t) {
+            Logx.w("[keepalive] ensureChannel failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * Android 13+ 需要运行时授予通知权限。
+     *
+     * <p>**不授予也不影响常驻**——按系统规定，用户拒绝通知权限后前台服务的提示只是
+     * 不再出现在通知栏（只在「任务管理器」里可见）。所以这个权限是"要不要看见那条提示"
+     * 的选择，不是功能必需。
+     */
+    static boolean hasNotifPermission(Context c) {
+        if (Build.VERSION.SDK_INT < 33) {
+            return true;
+        }
+        try {
+            return c.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
     /** 拉起服务。可以在应用处于前台时调用（设置页 / 开机广播）。 */
     static void start(Context c) {
         if (c == null) {
@@ -76,7 +137,7 @@ public class KeepAliveService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createChannel();
+        ensureChannel(this);
     }
 
     @Override
@@ -101,31 +162,6 @@ public class KeepAliveService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
-    }
-
-    private void createChannel() {
-        if (Build.VERSION.SDK_INT < 26) {
-            return;
-        }
-        try {
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (nm == null) {
-                return;
-            }
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "常驻运行",
-                    NotificationManager.IMPORTANCE_MIN);
-            // IMPORTANCE_MIN = 完全静默：不出声、不振动、**状态栏不显示图标**，
-            // 只在通知栏里留一条。用户还可以在系统设置里把它整个关掉。
-            ch.setDescription("让「记账截图」随时保持响应（点磁贴不再冷启动）。"
-                    + "设为「静默」后状态栏不会有图标。");
-            ch.setShowBadge(false);
-            ch.setSound(null, null);
-            ch.enableVibration(false);
-            ch.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
-            nm.createNotificationChannel(ch);
-        } catch (Throwable t) {
-            Logx.w("[keepalive] createChannel failed: " + t.getMessage());
-        }
     }
 
     private Notification buildNotification() {
