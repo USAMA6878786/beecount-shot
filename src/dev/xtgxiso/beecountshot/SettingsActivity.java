@@ -93,6 +93,11 @@ public class SettingsActivity extends Activity {
             }, "bee-ensure-a11y").start();
         }
 
+        // 打开设置页时应用在前台，正是把常驻服务拉起来的合法时机。
+        if (Prefs.keepAlive(this)) {
+            KeepAliveService.start(this);
+        }
+
         // ---------------- 使用前提 ----------------
         heading(root, "使用前提");
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
@@ -146,6 +151,32 @@ public class SettingsActivity extends Activity {
         // 已整个去掉：截屏现在走无障碍直调系统截屏动作，不经过按键注入，
         // 跟控制中心面板收没收干净没有关系——那段等待是配合老路径的，没有存在理由了。
         // 「收起面板」这个动作本身**保留**（不收的话控制面板会出现在截图里）。
+
+        // ---------------- 常驻运行 ----------------
+        heading(root, "常驻运行");
+        body(root, "打开后模块会挂一个前台服务，让进程不被系统回收。好处有两个：\n"
+                + "① 点磁贴不必再冷启动进程（**第一次点击也能立刻响应**）；\n"
+                + "② 无障碍服务不会掉线（它是最快的截屏路径；掉线就只能用较慢的模拟按键兜底）。\n\n"
+                + "代价是一条常驻通知。它用的是**最低重要性**的通知渠道，"
+                + "所以**状态栏不会出现图标**，只在通知栏里有一条静默条目。\n\n"
+                + "如果连这一条也不想要：系统设置 → 通知 → 记账截图 → 把「常驻运行」这个渠道关掉，"
+                + "服务本身照常运行。");
+        CheckBox keepAlive = new CheckBox(this);
+        keepAlive.setText("常驻运行（保证点磁贴立刻响应）");
+        keepAlive.setChecked(Prefs.keepAlive(this));
+        keepAlive.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                Prefs.setKeepAlive(SettingsActivity.this, isChecked);
+                Logx.i("[settings] keep-alive set to " + isChecked);
+                if (isChecked) {
+                    KeepAliveService.start(SettingsActivity.this);
+                } else {
+                    KeepAliveService.stop(SettingsActivity.this);
+                }
+            }
+        });
+        root.addView(keepAlive);
 
         // ---------------- 自动删截图 ----------------
         heading(root, "识别完成后删除截图");
