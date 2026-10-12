@@ -121,17 +121,6 @@ final class HostProbe {
         return n;
     }
 
-    /** 一次"处理完一张截图"的结果。 */
-    static final class Outcome {
-        final long ts;
-        final boolean hasBill;
-
-        Outcome(long ts, boolean hasBill) {
-            this.ts = ts;
-            this.hasBill = hasBill;
-        }
-    }
-
     /** 一份解析好的 Dart 日志快照（只留判定要用的东西，体积很小）。 */
     static final class Parsed {
         final int len;
@@ -140,8 +129,8 @@ final class HostProbe {
         long latestOutcomeTs = 0L;
         /** 每一条「自动记账成功」的时间戳。 */
         final java.util.List<Long> successTs = new java.util.ArrayList<Long>();
-        /** 每一条「落库完成」事件，按时间升序。 */
-        final java.util.List<Outcome> outcomes = new java.util.ArrayList<Outcome>();
+        /** 每一条「落库完成」事件的时间戳，按时间升序。 */
+        final java.util.List<Long> outcomes = new java.util.ArrayList<Long>();
 
         Parsed(int len, int hash) {
             this.len = len;
@@ -192,7 +181,9 @@ final class HostProbe {
                     }
                 }
                 if (msg.indexOf(Const.OUTCOME_LOG_MARKER) >= 0) {
-                    p.outcomes.add(new Outcome(ts, parseBills(msg) > 0));
+                    // v2.23：不再解析「成功=N 笔」。删除策略改成"只要配到结果就删"，
+                    // 识别到没识别到都删，所以这个数字没有意义了。
+                    p.outcomes.add(Long.valueOf(ts));
                     if (ts > p.latestOutcomeTs) {
                         p.latestOutcomeTs = ts;
                     }
@@ -202,12 +193,7 @@ final class HostProbe {
             Logx.w("[probe] app_logs parse failed: " + t.getMessage());
         }
         // 数组顺序理论上就是时间顺序，排一下更稳妥。
-        java.util.Collections.sort(p.outcomes, new java.util.Comparator<Outcome>() {
-            @Override
-            public int compare(Outcome a, Outcome b) {
-                return a.ts < b.ts ? -1 : (a.ts > b.ts ? 1 : 0);
-            }
-        });
+        java.util.Collections.sort(p.outcomes);
         cache = p;
         return p;
     }
@@ -220,13 +206,13 @@ final class HostProbe {
      * N>0 说明这张有账目，N=0 说明未识别到账单。
      * 于是"放行的先后顺序"和"出结果的先后顺序"可以一一对上，不用再猜。
      */
-    static java.util.List<Outcome> outcomesAfter(String json, long afterTs) {
+    static java.util.List<Long> outcomesAfter(String json, long afterTs) {
         Parsed p = parse(json);
-        java.util.List<Outcome> out = new java.util.ArrayList<Outcome>();
+        java.util.List<Long> out = new java.util.ArrayList<Long>();
         for (int i = 0; i < p.outcomes.size(); i++) {
-            Outcome o = p.outcomes.get(i);
-            if (o.ts > afterTs) {
-                out.add(o);
+            long ts = p.outcomes.get(i).longValue();
+            if (ts > afterTs) {
+                out.add(Long.valueOf(ts));
             }
         }
         return out;
@@ -235,27 +221,6 @@ final class HostProbe {
     /** 最新一条"处理完"事件的时间戳；一条都没有则 0。 */
     static long latestOutcomeTs(String json) {
         return parse(json).latestOutcomeTs;
-    }
-
-    /** 从 {@code 成功=N 笔} 里抠出 N。解析不出来按 0（= 没识别到账单）处理，方向是安全的。 */
-    private static int parseBills(String msg) {
-        int idx = msg.indexOf(Const.OUTCOME_BILLS_FIELD);
-        if (idx < 0) {
-            return 0;
-        }
-        int s = idx + Const.OUTCOME_BILLS_FIELD.length();
-        int e = s;
-        while (e < msg.length() && msg.charAt(e) >= '0' && msg.charAt(e) <= '9') {
-            e++;
-        }
-        if (e == s) {
-            return 0;
-        }
-        try {
-            return Integer.parseInt(msg.substring(s, e));
-        } catch (Throwable t) {
-            return 0;
-        }
     }
 
     /**
