@@ -11,6 +11,7 @@ public final class Prefs {
     private static final String FILE = "cfg";
     private static final String KEY_AUTO_DELETE = "auto_delete";
     private static final String KEY_PRECISE = "precise_partial";
+    private static final String KEY_HOST_PKG = "host_pkg";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
@@ -23,6 +24,31 @@ public final class Prefs {
     //
     // 留个记录免得以后又绕回来：老的 delay_ms 配置项还躺在 SharedPreferences 里没人读，
     // 不用管它。
+
+    /**
+     * 记住探测到的宿主包名。
+     *
+     * <p>为什么值得持久化：探测要开一次 root shell 跑 {@code pm list packages}，
+     * 实测 ~100~200ms。而这个值对一台设备来说是**稳定的**（除非用户换装 prod/dev 版）。
+     * 冷启动（长时间不用后第一次点磁贴）本来要现跑一次，白等一两百毫秒——
+     * 存下来就能直接跳过。见 {@link HostInfo#pkg}。
+     */
+    static String hostPkg(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getString(KEY_HOST_PKG, null);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static void setHostPkg(Context c, String pkg) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putString(KEY_HOST_PKG, pkg).apply();
+        } catch (Throwable ignored) {
+        }
+    }
 
     /** 模块 App 进程的日志文件（私有目录，再由设置页导出）。 */
     public static String appLogPath(Context c) {
