@@ -93,9 +93,14 @@ public class SettingsActivity extends Activity {
             }, "bee-ensure-a11y").start();
         }
 
+        // 先把通知渠道建出来：系统设置里"一个渠道都没有"的应用，
+        // 它的"允许通知"总开关是灰的、点不动——用户会以为是模块坏了。
+        KeepAliveService.ensureChannel(this);
+
         // 打开设置页时应用在前台，正是把常驻服务拉起来的合法时机。
         if (Prefs.keepAlive(this)) {
             KeepAliveService.start(this);
+            requestNotifPermissionIfNeeded();
         }
 
         // ---------------- 使用前提 ----------------
@@ -170,7 +175,9 @@ public class SettingsActivity extends Activity {
                 Prefs.setKeepAlive(SettingsActivity.this, isChecked);
                 Logx.i("[settings] keep-alive set to " + isChecked);
                 if (isChecked) {
+                    KeepAliveService.ensureChannel(SettingsActivity.this);
                     KeepAliveService.start(SettingsActivity.this);
+                    requestNotifPermissionIfNeeded();
                 } else {
                     KeepAliveService.stop(SettingsActivity.this);
                 }
@@ -605,6 +612,30 @@ public class SettingsActivity extends Activity {
             Toast.makeText(this,
                     "自动添加失败，请手动：控制中心 → 编辑 → 找到「记账截图」拖上去",
                     Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /**
+     * Android 13+ 运行时申请通知权限。
+     *
+     * <p>只申请一次，而且**拒绝完全不影响常驻**——按系统规定，用户拒绝之后前台服务的提示
+     * 只是不再出现在通知栏（只在「任务管理器」里可见）。所以这里是"要不要看见那条提示"
+     * 的选择题。
+     */
+    private void requestNotifPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < 33 || KeepAliveService.hasNotifPermission(this)) {
+            return;
+        }
+        if (Prefs.notifAsked(this)) {
+            return; // 问过一次就别再烦人，让用户自己去系统设置里开
+        }
+        Prefs.setNotifAsked(this, true);
+        try {
+            requestPermissions(
+                    new String[]{"android.permission.POST_NOTIFICATIONS"},
+                    KeepAliveService.REQ_NOTIF);
+        } catch (Throwable t) {
+            Logx.w("[settings] request notif permission failed: " + t.getMessage());
         }
     }
 
