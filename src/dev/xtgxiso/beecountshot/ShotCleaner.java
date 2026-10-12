@@ -70,6 +70,8 @@ final class ShotCleaner {
             }
 
             String candidate = null;
+            // 宿主有没有确认过"这张图确实是闸门放行给蜜蜂记账的"——超时兜底要用它做安全闸。
+            boolean candidateConfirmed = false;
             long deadline = System.currentTimeMillis() + MAX_WAIT_MS;
 
             while (System.currentTimeMillis() < deadline) {
@@ -96,11 +98,30 @@ final class ShotCleaner {
                                 + " deletedByHost=" + answer.deleted
                                 + " successTs=" + answer.successTs
                                 + " activityAlive=" + answer.activityAlive);
+                        if (answer.processed) {
+                            candidateConfirmed = true;
+                        }
                         if (handleIfDecided(ctx, answer, "query")) {
                             return;
                         }
                     }
                 }
+            }
+            // ---- 超时兜底：不再一律保留 ----
+            //
+            // 为什么要改：连点时蜜蜂记账自己会**防抖**（它日志里有"防抖跳过：距离上次处理仅 21ms"），
+            // 两次挨着的截图它可能只处理一次、只写一条「落库完成」——另一张永远等不到结果，
+            // 于是永远留在相册里。真机日志里 9 次"超时保留"就是这么来的。
+            //
+            // 等满 60 秒之后，任何该读这张图的动作早就读完了，所以删是安全的。
+            // 但仍然**只删宿主确认过身份的那张**（processed=true = 这张图确实是我们闸门
+            // 放行给蜜蜂记账的），避免误删用户自己手动截的图。
+            if (candidate != null && candidateConfirmed
+                    && RootShell.isSafeScreenshotPath(candidate)) {
+                Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果，"
+                        + "但宿主确认过这张是闸门放行的 -> 直接删");
+                doDelete(ctx, candidate, 0L);
+                return;
             }
             Logx.i("[clean] 超时仍未拿到'可删'结论（" + MAX_WAIT_MS + "ms），截图保留"
                     + "——宁可漏删，绝不误删");
