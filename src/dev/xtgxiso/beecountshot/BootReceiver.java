@@ -25,6 +25,7 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
         Logx.i("[boot] starting keep-alive service");
+        KeepAliveService.ensureChannel(context);
         KeepAliveService.start(context);
     }
 }
