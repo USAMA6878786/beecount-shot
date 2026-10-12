@@ -13,6 +13,7 @@ public final class Prefs {
     private static final String KEY_PRECISE = "precise_partial";
     private static final String KEY_HOST_PKG = "host_pkg";
     private static final String KEY_KEEP_ALIVE = "keep_alive";
+    private static final String KEY_NOTIF_ASKED = "notif_asked";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
@@ -71,6 +72,24 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putBoolean(KEY_KEEP_ALIVE, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 通知权限问过一次就不再弹（Android 13+）。 */
+    static boolean notifAsked(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_NOTIF_ASKED, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static void setNotifAsked(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_NOTIF_ASKED, v).apply();
         } catch (Throwable ignored) {
         }
     }
