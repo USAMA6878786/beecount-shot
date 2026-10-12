@@ -14,31 +14,23 @@ import java.util.List;
  * </ol>
  *
  * <p>判定方式在 v2.7 换成了**按次数配对**，因为成功日志里**不带是哪张图**。
- * 原来的做法（v2.6）是"把成功归给最新放行的那张"，连点两次时会张冠李戴：
+ * 原来的做法（v2.6）是"把成功归给最新放行的那张"，连点两次时会张冠李戴。
  *
- * <pre>
- *   放行 A（第 0 秒）→ 放行 B（第 3 秒）
- *   A 的成功在第 13 秒到达，而 B 恰好也在第 13 秒被上报
- *   → 拿 A 的成功去删 B；可 B 可能根本没识别成功 —— 误删
- * </pre>
+ * <p><b>v2.23 起策略简化了：只要一张截图配到了"识别完成"的结果，就删——不管它有没有
+ * 识别出账单。</b>
  *
- * 现在改成数次数：**放行了几张，就等几次成功**。
+ * <p>为什么可以这样：会走到这里的图**只可能是点磁贴截的那几张**（{@link LastShot} 里
+ * 只记闸门放行过的路径），而"配到结果"意味着蜜蜂记账**已经把它读完并识别完了**
+ * （{@code 落库完成} 那条日志是识别结束时才写的）。用户的意图本来就是"这张图我看过了，
+ * 不用留"——识别到账单要删，没识别到账单同样不用留。所以不再区分。
+ *
+ * <p>保留的两条约束：
  * <ul>
- *   <li>放行 1 张、等到 1 次成功 → 删这一张；</li>
- *   <li>放行 2 张、等到 2 次成功 → 两张都删；</li>
- *   <li>放行 2 张、只等到 1 次成功 → 说明有一张没成。</li>
+ *   <li>{@code usedEventTs}：同一条"识别完成"日志不能被用两次，否则一张图会被当成两张；</li>
+ *   <li>没等到结果的图**继续等**，不会提前删——"识别完成以后才删"这条底线还在。</li>
  * </ul>
  *
- * <p>最后那种情况在 v2.7 是"全部保留"，但用户实测发现太保守：连点三次、前两张成功、
- * 第三张未识别，结果三张全留着。v2.8 加了 {@link #setPrecise} 开关，打开后按
- * **"先放行的先出结果"** 推断——前面那几张是成功的，删掉；后面没等到成功的保留。
- *
- * <p><b>这个推断是有前提的</b>：它假定蜜蜂记账按上报先后依次处理截图。万一失败的是
- * 中间那张（比如第 2 张失败、第 3 张成功），就会删错。所以它是个开关，默认开的理由是
- * 用户明确要"删成功的、留没识别的"，关掉就回到最保守的"有失败就全留"。
- *
- * <p>另外保留「同一次成功不能兑换两次」的约束（{@code usedEventTs}），
- * 防止一条成功日志被两条路径各用一次。
+ * <p>失败路径（找不到"落库完成"日志时才走）仍按成功次数推断，见 {@link #decide}。
  */
 final class HostVerdict {
 
@@ -132,8 +124,7 @@ final class HostVerdict {
 
         // ---- 精确配对：一条"落库完成"对应一张截图 ----
         long outcomeFrom = Math.max(usedEventTs, earliest - SLACK_MS);
-        java.util.List<HostProbe.Outcome> outcomes =
-                HostProbe.outcomesAfter(appLogsJson, outcomeFrom);
+        java.util.List<Long> outcomes = HostProbe.outcomesAfter(appLogsJson, outcomeFrom);
         if (!outcomes.isEmpty()) {
             return pair(outcomes, batch, batchAt, eventTs);
         }
@@ -168,10 +159,10 @@ final class HostVerdict {
     /**
      * 精确配对：把"落库完成"事件按先后依次认领给按放行先后排好的截图。
      *
-     * <p>一张截图只有在**拿到自己的结果**之后才会被处理：认到"有账目"就删，
-     * 认到"未识别"就保留并标记结算。没等到结果的那些继续等下一轮。
+     * <p>一张截图只有在**拿到自己的结果**之后才会被处理——配到结果就删，
+     * 不再区分有没有识别到账单（见类注释）。没等到结果的那些继续等下一轮。
      */
-    private static String[] pair(java.util.List<HostProbe.Outcome> outcomes,
+    private static String[] pair(java.util.List<Long> outcomes,
                                  List<String> batch, List<Long> batchAt, long eventTs) {
         List<String> del = new ArrayList<String>(4);
         int consumed = 0;      // 认领掉多少张（不论成功失败）
@@ -180,22 +171,19 @@ final class HostVerdict {
         for (int i = 0; i < batch.size(); i++) {
             long at = batchAt.get(i).longValue();
             // 跳掉那些早于这张放行时间的事件（属于更老的截图）
-            while (oi < outcomes.size() && outcomes.get(oi).ts < at - SLACK_MS) {
+            while (oi < outcomes.size() && outcomes.get(oi).longValue() < at - SLACK_MS) {
                 oi++;
             }
             if (oi >= outcomes.size()) {
                 break; // 这张还没出结果，后面的更不会有 —— 到此为止
             }
-            HostProbe.Outcome o = outcomes.get(oi);
+            long oTs = outcomes.get(oi).longValue();
             oi++;
             consumed++;
-            lastOutcomeTs = o.ts;
-            if (o.hasBill) {
-                Logx.i("[verdict] paired " + batch.get(i) + " -> 有账目，删");
-                del.add(batch.get(i));
-            } else {
-                Logx.i("[verdict] paired " + batch.get(i) + " -> 未识别到账单，保留");
-            }
+            lastOutcomeTs = oTs;
+            // 配到结果 = 蜜蜂记账已经把它读完识别完了 -> 删。不再看有没有识别到账单。
+            Logx.i("[verdict] paired " + batch.get(i) + " -> 识别完成，删");
+            del.add(batch.get(i));
         }
         if (consumed == 0) {
             return null;
@@ -217,10 +205,6 @@ final class HostVerdict {
             resolvedUpToTs = maxAt;
         }
 
-        if (del.isEmpty()) {
-            Logx.i("[verdict] 这一批都未识别到账单，全部保留");
-            return null;
-        }
         rememberPending(del);
         Logx.i("[verdict] DELETE " + del.size() + " of " + batch.size()
                 + " file(s) (exact pairing): " + del);
