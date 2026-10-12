@@ -185,6 +185,12 @@ public class ShotTileService extends TileService {
         // 如果这时接收器还没注册，那条唤醒广播就丢了。
         ShotBridge.ensureReceiver(app);
 
+        // 顺手确保常驻服务在跑（用户在后台点了磁贴时这里多半会被系统拒掉，
+        // 但包在 try 里没副作用；真正能把服务拉起来的时机是打开设置页）。
+        if (Prefs.keepAlive(app)) {
+            KeepAliveService.start(app);
+        }
+
         try {
             final boolean root = RootShell.isGranted(app);
 
@@ -251,8 +257,15 @@ public class ShotTileService extends TileService {
                         // 按键注入、跟面板状态无关，等待就没有存在理由了。
                         //
                         // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
+                        // 收面板命令已经发出，再等一小会儿让下层界面画干净——
+                        // 否则会拍到"控制中心刚收起、下层还在过渡/模糊"的那一帧。
+                        // 见 Const.SHOT_SETTLE_MS。
+                        try {
+                            Thread.sleep(Const.SHOT_SETTLE_MS);
+                        } catch (InterruptedException ignored) {
+                        }
                         final boolean a11yReady = ShotAccessibilityService.isReady();
-                        Logx.i("[tile] 立刻截屏（不等待）a11y=" + a11yReady);
+                        Logx.i("[tile] 截屏（收面板后等了 " + Const.SHOT_SETTLE_MS + "ms）a11y=" + a11yReady);
                         final long shotAt = System.currentTimeMillis();
 
                         // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
