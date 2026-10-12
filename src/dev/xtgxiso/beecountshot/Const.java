@@ -192,6 +192,18 @@ public final class Const {
     public static final long SHOT_TRY_MS = 2000L;
 
     /**
+     * 收起控制中心之后、发截屏请求之前，额外等这么久。
+     *
+     * <p>v2.18 曾把"收面板后的等待"整个删掉（收面板命令一返回就截屏），当时没问题；
+     * 但换成无障碍直调之后截屏**发得更早**，实测会拍到"控制中心刚收起、下层界面还在
+     * 过渡/模糊状态"的那一帧——图是截到了，但看不清。
+     *
+     * <p>100ms 是实测刚够跨过那个过渡帧、又基本感觉不到的量。**加的是固定值，不是设置项**：
+     * 之前那组 150/300/600/900/1300 的档位已经删了，没必要为 100ms 再开一个开关。
+     */
+    public static final long SHOT_SETTLE_MS = 100L;
+
+    /**
      * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
      *
      * <p>这个 flag 在 Android 里是**隐藏 API**，公开 SDK 的 android.jar 里没有这个常量，
