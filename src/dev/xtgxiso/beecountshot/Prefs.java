@@ -12,6 +12,7 @@ public final class Prefs {
     private static final String KEY_AUTO_DELETE = "auto_delete";
     private static final String KEY_PRECISE = "precise_partial";
     private static final String KEY_HOST_PKG = "host_pkg";
+    private static final String KEY_KEEP_ALIVE = "keep_alive";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
@@ -46,6 +47,30 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putString(KEY_HOST_PKG, pkg).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 是否让模块常驻（前台服务）。
+     *
+     * <p>默认开。常驻的两个好处：① 点磁贴不必再冷启动进程；② 无障碍服务的连接不会掉
+     * （它掉了就只能退回慢的 root 模拟按键）。代价是一条常驻通知——但用的是
+     * IMPORTANCE_MIN 的通知渠道，**状态栏不会出现图标**。
+     */
+    static boolean keepAlive(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_KEEP_ALIVE, true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    static void setKeepAlive(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_KEEP_ALIVE, v).apply();
         } catch (Throwable ignored) {
         }
     }
