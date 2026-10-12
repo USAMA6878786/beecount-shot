@@ -484,6 +484,17 @@ public final class RootShell {
      * 真机日志里因此有 5 张放行过的图一直没被删掉。
      */
     public static java.util.List<String> findScreenshotsSince(long sinceMs) {
+        return findScreenshotsSince(sinceMs, Long.MAX_VALUE);
+    }
+
+    /**
+     * 时间窗版本：只要修改时间落在 {@code [sinceMs-1000, untilMs]} 里的截图。
+     *
+     * <p>为什么要上界：「这张图是不是我们自己截的」除了靠宿主确认，还能靠**时间**判断——
+     * 点下磁贴之后几秒内冒出来的图，基本只可能是我们那一张。
+     * 见 {@link ShotCleaner} 里对"蜜蜂记账防抖跳过、永远不会上报"的处理。
+     */
+    public static java.util.List<String> findScreenshotsSince(long sinceMs, long untilMs) {
         java.util.List<String> out = new java.util.ArrayList<String>();
         StringBuilder dirs = new StringBuilder();
         for (int i = 0; i < Const.SCREENSHOT_DIRS.length; i++) {
@@ -513,7 +524,7 @@ public final class RootShell {
             } catch (Throwable t) {
                 continue;
             }
-            if (mtime < lowerBound) {
+            if (mtime < lowerBound || mtime > untilMs) {
                 continue;
             }
             String path = line.substring(bar + 1);
