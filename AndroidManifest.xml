@@ -15,6 +15,13 @@
         android:minSdkVersion="26"
         android:targetSdkVersion="35" />
 
+    <!-- 常驻服务（让模块进程不被回收）。specialUse 是 Android 14 起对"不属于其它
+         任何类别的前台服务"的兜底类型。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 开机自动把常驻服务拉起来（这是 startForegroundService 的合法豁免场景）。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!--
         必须声明。模块 targetSdk 35，受 Android 11+ 的包可见性过滤约束：不声明的话
         getLaunchIntentForPackage("com.tntlikely.beecount") 一定返回 null，
@@ -87,6 +94,31 @@
             android:exported="false"
             android:label="@string/widget_label"
             android:theme="@android:style/Theme.DeviceDefault.Light" />
+
+        <!--
+            常驻服务：让模块进程不被系统回收。
+
+            不用它的时候，点磁贴要付两份代价——进程冷启动（发生在第一行日志之前，
+            用户直接能感觉到），以及无障碍服务连接不上（它是最快的截屏路径，
+            进程刚起来时还没绑定好，更糟的是真机上出现过"掉线后再也连不回来"）。
+        -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="keep_the_quick_settings_tile_responsive" />
+        </service>
+
+        <!-- 开机拉起常驻服务 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".ShotTileService"
