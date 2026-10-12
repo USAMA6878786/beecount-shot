@@ -84,7 +84,8 @@ public final class RootShell {
      * <p>返回值里的 {@code exit} 是 {@code cmd statusbar collapse} 的结果，
      * 调用方据此判断要不要退回非 root 方案（和原来一致）。
      */
-    public static Result armAndCollapse(String action, String pkg, String extras, int flags) {
+    public static Result armAndCollapse(String action, String pkg, String extras, int flags,
+                                        String markPath) {
         StringBuilder cmd = new StringBuilder("am broadcast -a ").append(action);
         if (pkg != null && pkg.length() > 0) {
             cmd.append(" -p ").append(pkg);
@@ -97,7 +98,17 @@ public final class RootShell {
         }
         // 广播的输出保留下来（合并成一次 su 之后仍然要能看出它到底发出去没有）
         cmd.append(" 2>&1; ");
-        cmd.append("cmd statusbar collapse; C=$?; echo COLLAPSE_EXIT=$C; exit $C");
+        cmd.append("cmd statusbar collapse; C=$?; ");
+        // 顺带把"时间标记"立起来。
+        //
+        // 无障碍那条路要用它判断"图到底出来了没有"，而标记必须早于截屏请求。
+        // 立在这里等于**白送**——反正这条 su 本来就要开，不必再单独开一次
+        // （每次 su 实测 ~100ms，省下来就是净赚）。
+        if (markPath != null) {
+            cmd.append("rm -f ").append(markPath).append("; touch ").append(markPath)
+                    .append(" 2>/dev/null; ");
+        }
+        cmd.append("echo COLLAPSE_EXIT=$C; exit $C");
 
         Result r = exec(cmd.toString(), 15000L);
         Logx.i("[root] arm+collapse -> exit=" + r.exit
@@ -313,11 +324,9 @@ public final class RootShell {
         return false;
     }
 
-    /** 立一个"现在"的时间标记，返回它的路径；之后用 {@link #waitForNewShot} 判断有没有更新的图。 */
-    public static String markNow() {
-        String mark = newMarkPath();
-        exec("rm -f " + mark + "; touch " + mark + " 2>/dev/null", 5000L);
-        return mark;
+    /** 生成一个标记路径（"立标记"这个动作由 {@link #armAndCollapse} 顺带做掉）。 */
+    public static String newMark() {
+        return newMarkPath();
     }
 
     /** 清掉标记文件。 */
@@ -340,14 +349,14 @@ public final class RootShell {
     /**
      * 轮询等系统把截图写出来（含小米的 {@code .pending-} 临时文件，出现了就算数）。
      *
-     * <p>从 400ms 缩到 250ms：每轮要起一个 su 去跑 find，慢是慢在这上面；
+     * <p>从 400ms → 250ms → 200ms：每轮要起一个 su 去跑 find，慢是慢在这上面；
      * 缩短间隔能更早发现出图，而单次 find 现在也便宜了（见 {@link #newScreenshotSinceMark()}）。
      */
     private static boolean waitForScreenshot(long timeoutMs, String mark) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
-                Thread.sleep(250L);
+                Thread.sleep(200L);
             } catch (InterruptedException e) {
                 return false;
             }
