@@ -32,7 +32,22 @@ final class HostInfo {
 
     private static volatile String pkg;
 
-    /** 解析并缓存包名。会开 root shell，请在子线程调用。 */
+    /** 是否真的跑过 root 探测（持久化的值不算）。 */
+    private static volatile boolean probed = false;
+
+    /**
+     * 拿到宿主包名。**不再同步等 root 探测**。
+     *
+     * <p>顺序：本进程缓存 → 上次持久化的值 → 内置默认值；三种都立刻返回。
+     * 然后**在后台**补一次 root 探测来校正（结果会持久化，下次启动直接用）。
+     *
+     * <p>为什么要这样：探测要开 root shell 跑 {@code pm list packages}，100~200ms，
+     * 而它原本挂在"点击磁贴"的关键路径上——冷启动时那 100~200ms 用户直接能感觉到。
+     * 而这个值对一台设备是稳定的，没必要每次现算。
+     *
+     * <p>代价：万一用户换装了另一个风味（prod ↔ dev），**当次**可能用错包名，
+     * 但后台探测马上会纠正并持久化，下一次就对。设置页会显示当前用的包名。
+     */
     static String pkg(Context context) {
         String v = pkg;
         if (v != null) {
@@ -42,15 +57,30 @@ final class HostInfo {
             if (pkg != null) {
                 return pkg;
             }
-            String found = probePkg();
-            if (found == null) {
-                found = PKG_CANDIDATES[0];
-                Logx.w("[host] 未能探测到蜜蜂记账的包名，退回默认值 " + found);
-            } else {
-                Logx.i("[host] package resolved to: " + found);
-            }
-            pkg = found;
-            return found;
+            String saved = Prefs.hostPkg(context);
+            pkg = (saved != null && saved.length() > 0) ? saved : PKG_CANDIDATES[0];
+            Logx.i("[host] package = " + pkg
+                    + (saved != null ? "（来自上次探测）" : "（内置默认值）") + "，后台校正中");
+            final Context app = context.getApplicationContext() != null
+                    ? context.getApplicationContext() : context;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    String found = probePkg();
+                    probed = true;
+                    if (found == null) {
+                        Logx.w("[host] 后台探测没找到蜜蜂记账，保持 " + pkg);
+                        return;
+                    }
+                    if (!found.equals(pkg)) {
+                        Logx.w("[host] 包名校正：" + pkg + " -> " + found);
+                        pkg = found;
+                    }
+                    Prefs.setHostPkg(app, found);
+                    Logx.i("[host] package resolved to: " + found);
+                }
+            }, "bee-pkg-probe").start();
+            return pkg;
         }
     }
 
@@ -60,8 +90,9 @@ final class HostInfo {
         return v != null ? v : PKG_CANDIDATES[0];
     }
 
+    /** 是否已经真的跑过 root 探测（设置页显示"探测中…"用）。 */
     static boolean pkgResolved() {
-        return pkg != null;
+        return probed;
     }
 
     private static String probePkg() {
