@@ -690,7 +690,7 @@ public final class RootShell {
         return t;
     }
 
-    private static String trim(String s) {
+    static String trim(String s) {
         if (s == null) {
             return "";
         }
