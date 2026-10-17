@@ -40,7 +40,8 @@ final class HostBridge {
             Logx.i("[bridge] host context acquired: " + app.getClass().getName());
             try {
                 Logx.i("[bridge] host cacheDir = " + app.getCacheDir().getAbsolutePath());
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
+                Logx.w("[bridge] 拿宿主 Context 失败: " + t.getMessage());
             }
 
             // 遥测通道：把宿主侧状态写进宿主自己的 SharedPreferences。
