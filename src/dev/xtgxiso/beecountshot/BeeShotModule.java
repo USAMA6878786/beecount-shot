@@ -117,6 +117,7 @@ public class BeeShotModule extends XposedModule {
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
             installEngineKeepAlive(cl);
+            installEngineDestroyGuard(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -413,6 +414,43 @@ public class BeeShotModule extends XposedModule {
                     return Boolean.FALSE;
                 }
                 return original;
+            }
+        });
+    }
+
+    /**
+     * 拦住引擎销毁（真正收敛的那一刀）。
+     *
+     * <h3>为什么不再只 hook shouldDestroyEngineWithHost</h3>
+     * 真机日志里 {@code engine_kept} 一次都没出现 —— 说明
+     * {@code FlutterActivity.shouldDestroyEngineWithHost()} 那条路**根本没被走到**
+     * （可能被 Flutter 版本改了实现，也可能走了别的分支）。
+     *
+     * <p>而 {@code FlutterEngine.destroy()} 是引擎真正被释放的地方 ——
+     * 不管是哪种路径触发销毁，最后都会落到这里。拦住它才是"引擎保活"的唯一有效位置。
+     *
+     * <h3>代价</h3>
+     * 引擎和 Dart isolate 不再随界面释放，会一直占着内存（百 MB 量级），直到进程结束。
+     * 这是有意的取舍：**进程保活 + 引擎保活**，换来"界面被回收后识别仍可用"。
+     */
+    private void installEngineDestroyGuard(ClassLoader cl) {
+        Method destroy = null;
+        try {
+            Class<?> engine = Class.forName(
+                    "io.flutter.embedding.engine.FlutterEngine", false, cl);
+            destroy = findMethod(engine, "destroy", new Class<?>[0]);
+        } catch (Throwable t) {
+            Logx.e("[hook] FlutterEngine lookup failed", t);
+        }
+        if (destroy == null) {
+            Logx.w("[hook] FlutterEngine.destroy() not found");
+        }
+        add("engine-destroy-guard", destroy, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                HostState.onEngineKeptAlive();
+                Logx.i("[hook] FlutterEngine.destroy() 被拦下 —— 引擎继续存活");
+                return null; // 不 proceed，等于不销毁
             }
         });
     }
