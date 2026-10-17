@@ -1,5 +1,43 @@
 # 更新日志
 
+## v2.32
+
+**第一步：让 Flutter 引擎跟界面解耦（"引擎保活"）**
+
+### 为什么要做
+
+蜜蜂记账的截图监听器是 **Dart 侧**注册的，而它的 `FlutterEngine` 默认
+**跟着 `MainActivity` 一起销毁**（`FlutterActivity.shouldDestroyEngineWithHost()` 默认返回 true）。
+
+于是主界面被系统回收之后：观察者被注销、Dart isolate 也没了 —— 从这一刻起蜜蜂记账
+**彻底感知不到任何截图**，不管我们放行不放行。这就是"必须先打开一次蜜蜂记账"的根。
+
+### 改了什么
+
+hook `FlutterActivity.shouldDestroyEngineWithHost()` → **返回 false**。
+
+界面销毁时**引擎和 Dart isolate 都保留**，观察者和识别逻辑继续在后台工作。
+日志里会出现：
+
+```
+[hook] engine kept alive (shouldDestroyEngineWithHost -> false)
+```
+
+### 配套调整
+
+- `MainActivity.onDestroy` 那行日志不再断言"监听要掉了"——界面没了 ≠ 监听没了。
+- 原来点击时若发现主界面被回收，会弹"本次可能不会被记入"——**这条已去掉**，
+  因为它现在是**正常状态**（引擎还在），再弹就是误导。
+
+### 代价
+
+宿主进程会常驻一份 Dart 堆（百 MB 量级），直到进程被杀。
+所以它要和**常驻前台服务**配合：**服务保进程，这个保引擎**。两个都开着才完整。
+
+### 怎么验证
+
+见发布说明里的「验证步骤」，重点是**用返回键退出**，不要用"从最近任务划掉"。
+
 ## v2.31
 
 **改成一句话 Toast：只看截图成没成，不再发任何结果通知**
