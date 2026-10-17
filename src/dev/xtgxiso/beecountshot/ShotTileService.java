@@ -156,6 +156,20 @@ public class ShotTileService extends TileService {
     /** 连续几次点击都没能用上无障碍。到 3 次提醒用户一次。 */
     private static volatile int a11yFailStreak = 0;
 
+    /**
+     * 主动 push 的开关。
+     *
+     * <p>v2.33 起试了三种拿 messenger 的方式（拦上报 / 拦通道构造 / 拦 getDartExecutor），
+     * **Dart 侧始终零回执**，说明消息没真正进到 Dart。
+     *
+     * <p>而它有一个确定的副作用：**会让宿主提前消费放行额度**，
+     * 导致 HostVerdict 不给"可删"结论 → 截图要等 60 秒超时才被兜底删掉，
+     * 表现就是"第一次识别完没删、第二次才删"。
+     *
+     * <p>所以在 push 真正验证通过之前，先关掉它，别让它拖累已经正常的功能。
+     */
+    private static final boolean PUSH_ENABLED = false;
+
     static void requestRefresh(Context ctx) {
         if (ctx == null) {
             return;
@@ -360,13 +374,12 @@ public class ShotTileService extends TileService {
 
                         // ---- 兜底：观察者没反应就主动推 ----
                         //
-                        // 蜜蜂记账的截图观察者会在界面销毁时被注销，那之后它永远发现不了新截图。
-                        // 但 Dart 侧的识别入口还在（引擎保活）——所以 2 秒后确认一下：
-                        // 宿主有没有"认领"这张图（认领 = 观察者在线、消息已经进去了）；
-                        // 没认领就由我们代替观察者，把这条消息推进去。
-                        //
-                        // 只在"没认领"时推，是为了避免同一张图被上报两次、记两笔账。
-                        if (sent && shotPath != null) {
+                        // ⚠️ v2.39 起**停用**：这条链路没打通（Dart 侧零回执），
+                        // 而它会让宿主把放行额度提前消费掉，导致 HostVerdict 迟迟不给
+                        // "可删"结论 —— 截图要等 60 秒超时才被兜底删掉，看起来像"没删"。
+                        // 在 push 真正验证通过之前，绝不能让它干扰原有判定。
+                        // 保留代码备查，重新启用时把 PUSH_ENABLED 改回 true。
+                        if (PUSH_ENABLED && sent && shotPath != null) {
                             final String pushPath = shotPath;
                             new Thread(new Runnable() {
                                 @Override
