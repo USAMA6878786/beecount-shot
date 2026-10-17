@@ -156,20 +156,6 @@ public class ShotTileService extends TileService {
     /** 连续几次点击都没能用上无障碍。到 3 次提醒用户一次。 */
     private static volatile int a11yFailStreak = 0;
 
-    /**
-     * 主动 push 的开关。
-     *
-     * <p>v2.33 起试了三种拿 messenger 的方式（拦上报 / 拦通道构造 / 拦 getDartExecutor），
-     * **Dart 侧始终零回执**，说明消息没真正进到 Dart。
-     *
-     * <p>而它有一个确定的副作用：**会让宿主提前消费放行额度**，
-     * 导致 HostVerdict 不给"可删"结论 → 截图要等 60 秒超时才被兜底删掉，
-     * 表现就是"第一次识别完没删、第二次才删"。
-     *
-     * <p>所以在 push 真正验证通过之前，先关掉它，别让它拖累已经正常的功能。
-     */
-    private static final boolean PUSH_ENABLED = false;
-
     static void requestRefresh(Context ctx) {
         if (ctx == null) {
             return;
@@ -319,7 +305,6 @@ public class ShotTileService extends TileService {
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
                         String via = "none";
-                        String shotPath = null;
 
                         // ---- 主路径：root 直接抓帧（v2.28 真机验证通过）----
                         //
@@ -333,7 +318,6 @@ public class ShotTileService extends TileService {
                             if (p != null) {
                                 sent = true;
                                 via = "screencap";
-                                shotPath = p;
                                 Logx.i("[tile] 截图路径=screencap 成功（"
                                         + (System.currentTimeMillis() - sc0) + "ms）");
                             } else {
@@ -370,52 +354,6 @@ public class ShotTileService extends TileService {
                             ShotToast.ok(app);
                         } else {
                             ShotToast.fail(app, "三条路都没成功");
-                        }
-
-                        // ---- 兜底：观察者没反应就主动推 ----
-                        //
-                        // ⚠️ v2.39 起**停用**：这条链路没打通（Dart 侧零回执），
-                        // 而它会让宿主把放行额度提前消费掉，导致 HostVerdict 迟迟不给
-                        // "可删"结论 —— 截图要等 60 秒超时才被兜底删掉，看起来像"没删"。
-                        // 在 push 真正验证通过之前，绝不能让它干扰原有判定。
-                        // 保留代码备查，重新启用时把 PUSH_ENABLED 改回 true。
-                        if (PUSH_ENABLED && sent && shotPath != null) {
-                            final String pushPath = shotPath;
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    try {
-                                        Thread.sleep(2000L);
-                                    } catch (InterruptedException ignored) {
-                                    }
-                                    ShotBridge.Answer a = ShotBridge.query(app, pushPath, 2500L);
-                                    if (a.received && a.processed) {
-                                        Logx.i("[push] 宿主已认领这张图（观察者在线），不推");
-                                        return;
-                                    }
-                                    if (!a.received) {
-                                        // 广播接收器是**动态注册**的：宿主进程不在就没人接，
-                                        // 消息会静默丢掉。这一行能直接把这种情况和"引擎失效"分开。
-                                        Logx.e("[push] 宿主进程无回应（接收器不在）-> 推送不会有人接");
-                                    }
-                                    if (!a.received) {
-                                        // 接收器是**动态注册**的：宿主进程不在就没人接，消息会静默丢掉。
-                                        // 这一行能把它和"引擎失效"直接分开。
-                                        Logx.e("[push] 宿主进程无回应（接收器不在）-> 推送不会有人接");
-                                    }
-                                    Logx.w("[push] 宿主没认领（观察者多半失效）-> 主动推一条");
-                                    try {
-                                        Intent p = new Intent(Const.ACTION_PUSH);
-                                        p.setPackage(HostInfo.pkg());
-                                        p.putExtra(Const.EXTRA_PUSH_PATH, pushPath);
-                                        p.addFlags(Intent.FLAG_RECEIVER_FOREGROUND
-                                                | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
-                                        app.sendBroadcast(p);
-                                    } catch (Throwable t) {
-                                        Logx.e("[push] 发推送请求失败", t);
-                                    }
-                                }
-                            }, "bee-push-check").start();
                         }
 
                         // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
