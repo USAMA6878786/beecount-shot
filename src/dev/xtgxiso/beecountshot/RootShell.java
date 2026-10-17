@@ -353,7 +353,22 @@ public final class RootShell {
      * 缩短间隔能更早发现出图，而单次 find 现在也便宜了（见 {@link #newScreenshotSinceMark()}）。
      */
     private static boolean waitForScreenshot(long timeoutMs, String mark) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
+        long waitStart = System.currentTimeMillis();
+
+        // ---- 快路：模块自己有相册权限时，靠 MediaStore 通知判断 ----
+        //
+        // 原来每 200ms 起一个 su 去 find，每次 su 约 100ms，所以确认环节要 200~350ms。
+        // 挂着观察者之后，截图一落盘几十毫秒就知道，**一次点击的 su 从 3~5 次降到 2 次**。
+        // 快路只分走前 500ms；没等到就退回 su 轮询，总窗口不变（不会因为快路失灵而漏判）。
+        if (ShotWatcher.isReady()) {
+            if (ShotWatcher.await(Math.min(timeoutMs, 500L), waitStart)) {
+                return true;
+            }
+            ShotWatcher.noteMiss();
+            Logx.w("[root] 相册通知没等到，退回 su 轮询");
+        }
+
+        long deadline = waitStart + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(200L);
