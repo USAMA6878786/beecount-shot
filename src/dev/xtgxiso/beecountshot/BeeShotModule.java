@@ -118,6 +118,7 @@ public class BeeShotModule extends XposedModule {
             installActivityLifecycleProbe(cl);
             installEngineKeepAlive(cl);
             installEngineDestroyGuard(cl);
+            installChannelCapture(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -455,6 +456,59 @@ public class BeeShotModule extends XposedModule {
         });
     }
 
+    /**
+     * 从 {@code MethodChannel} 的**构造函数**上抓 messenger。
+     *
+     * <h3>为什么要提前到构造这一刻</h3>
+     * 之前是"拦到一次真实截图上报"才顺手抓 messenger —— 但那要求蜜蜂记账的
+     * Activity 起来过、观察者注册过、并且真的截过一张。等于"想用推送，得先成功推送一次"。
+     *
+     * <p>而 {@code MainActivity.configureFlutterEngine} 里**一开始就会创建**截图通道
+     * （原生侧要拿它给 Dart 发消息）。所以在构造时就抓下来，条件宽松得多：
+     * **只要蜜蜂记账启动过就有**。
+     *
+     * <p>（"进程被杀"那种情况仍然救不了——没有 Dart 运行时，推给谁都没用。）
+     */
+    private void installChannelCapture(ClassLoader cl) {
+        Class<?> channelClass = null;
+        try {
+            channelClass = Class.forName("io.flutter.plugin.common.MethodChannel", false, cl);
+        } catch (Throwable t) {
+            Logx.e("[hook] MethodChannel lookup failed", t);
+        }
+        if (channelClass == null) {
+            failedList.add("shot-channel-ctor:not-found");
+            return;
+        }
+        java.lang.reflect.Constructor<?>[] ctors = channelClass.getDeclaredConstructors();
+        int n = 0;
+        for (final java.lang.reflect.Constructor<?> c : ctors) {
+            Class<?>[] ps = c.getParameterTypes();
+            if (ps.length < 2
+                    || !ps[0].getName().contains("BinaryMessenger")
+                    || ps[1] != String.class) {
+                continue;
+            }
+            boolean ok = add("shot-channel-ctor/" + ps.length, c,
+                    new XposedInterface.Hooker() {
+                        @Override
+                        public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                            try {
+                                if (HostPush.CHANNEL.equals(String.valueOf(chain.getArg(1)))) {
+                                    HostPush.stash(chain.getArg(0));
+                                }
+                            } catch (Throwable ignored) {
+                            }
+                            return chain.proceed();
+                        }
+                    });
+            if (ok) {
+                n++;
+            }
+        }
+        Logx.i("[hook] channel ctor hooks: " + n);
+    }
+
     private void installActivityLifecycleProbe(ClassLoader cl) {
         Method onDestroy = null;
         try {
@@ -502,7 +556,8 @@ public class BeeShotModule extends XposedModule {
 
     // ---------------------------------------------------------------- 工具
 
-    private boolean add(final String id, Method method, XposedInterface.Hooker hooker) {
+    private boolean add(final String id, java.lang.reflect.Executable method,
+                        XposedInterface.Hooker hooker) {
         if (method == null) {
             failedList.add(id + ":not-found");
             Logx.w("[hook] target not found: " + id);
@@ -511,7 +566,10 @@ public class BeeShotModule extends XposedModule {
         try {
             try {
                 // 请求框架别把目标方法内联掉，否则 hook 可能看不到调用。
-                deoptimize(method);
+                // 构造器没有"内联"这回事，只对普通方法做。
+                if (method instanceof Method) {
+                    deoptimize((Method) method);
+                }
             } catch (Throwable ignored) {
             }
             XposedInterface.HookHandle handle = hook(method)
