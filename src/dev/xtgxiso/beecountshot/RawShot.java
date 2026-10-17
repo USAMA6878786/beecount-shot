@@ -46,7 +46,7 @@ final class RawShot {
             RootShell.Result r = RootShell.exec(
                     "screencap " + raw.getAbsolutePath() + " 2>&1", 15000L);
             long ms = System.currentTimeMillis() - t0;
-            Bitmap bmp = decodeRaw(raw, swap == 1);
+            Bitmap bmp = decodeForProbe(raw, swap == 1);
             if (bmp == null) {
                 Logx.w("[raw] 解码失败 exit=" + r.exit + " out=" + RootShell.trim(r.out));
                 return null;
@@ -78,6 +78,14 @@ final class RawShot {
         //noinspection ResultOfMethodCallIgnored
         pngF.delete();
 
+        // 先把界面等静止。上一版就是在这里翻车的：调用方刚弹了进度框就立刻抓图，
+        // 第一张抓在淡入之前、第二张抓在之后，两张本来就不同（最大差 88 就是遮罩层的暗化幅度），
+        // 于是"颜色比对不通过"——**测的根本不是同一帧**。
+        try {
+            Thread.sleep(800L);
+        } catch (InterruptedException ignored) {
+        }
+
         long t0 = System.currentTimeMillis();
         RootShell.exec("screencap -p " + pngF.getAbsolutePath() + " 2>&1", 20000L);
         long pngMs = System.currentTimeMillis() - t0;
@@ -88,7 +96,10 @@ final class RawShot {
         long rawMs = System.currentTimeMillis() - t0;
         long rawSize = rawF.length();
 
-        Bitmap png = BitmapFactory.decodeFile(pngF.getAbsolutePath());
+        // 强制 ARGB_8888：不透明 PNG 默认可能解成 RGB_565，量化误差会污染比对
+        BitmapFactory.Options popts = new BitmapFactory.Options();
+        popts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        Bitmap png = BitmapFactory.decodeFile(pngF.getAbsolutePath(), popts);
         sb.append("PNG  ：").append(pngMs).append("ms，").append(pngSize / 1024).append(" KB\n");
         sb.append("raw  ：").append(rawMs).append("ms，").append(rawSize / 1024).append(" KB\n");
         if (png == null) {
@@ -101,7 +112,7 @@ final class RawShot {
         long encMs = 0L;
         long encSize = 0L;
 
-        Bitmap b0 = decodeRaw(rawF, false);
+        Bitmap b0 = decodeForProbe(rawF, false);
         if (b0 != null) {
             scoreNo = scoreColors(png, b0);
             long t1 = System.currentTimeMillis();
@@ -119,7 +130,7 @@ final class RawShot {
             }
             b0.recycle();
         }
-        Bitmap b1 = decodeRaw(rawF, true);
+        Bitmap b1 = decodeForProbe(rawF, true);
         if (b1 != null) {
             scoreYes = scoreColors(png, b1);
             b1.recycle();
@@ -198,7 +209,7 @@ final class RawShot {
      *
      * @param swap true = 交换 R/B（有些 ROM 的 raw 内存序已经是 BGRA，不用换）
      */
-    private static Bitmap decodeRaw(File f, boolean swap) {
+    static Bitmap decodeForProbe(File f, boolean swap) {
         FileInputStream in = null;
         try {
             long len = f.length();
@@ -250,7 +261,7 @@ final class RawShot {
             Logx.i("[raw] 解码 " + w + "x" + h + " fmt=" + fmt + " swap=" + swap);
             return bmp;
         } catch (Throwable t) {
-            Logx.e("[raw] decodeRaw 异常", t);
+            Logx.e("[raw] decode 异常", t);
             return null;
         } finally {
             if (in != null) {
