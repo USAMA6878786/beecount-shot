@@ -35,6 +35,15 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
+        读取照片：只用来判断"最新一张截图是否落盘"（MediaStore 快路），不外传。
+        不给也能用——ShotWatcher 会报告不可用，自动退回 su 扫描。
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!--
         必须声明。模块 targetSdk 35，受 Android 11+ 的包可见性过滤约束：不声明的话
         getLaunchIntentForPackage("com.tntlikely.beecount") 一定返回 null，
         表现就是"打开蜜蜂记账"提示找不到应用。
