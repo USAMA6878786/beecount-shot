@@ -610,7 +610,13 @@ public final class RootShell {
         String cmd = "if [ -f '" + path + "' ]; then rm -f '" + path + "' && echo DELETED; "
                 + "else echo MISSING; fi";
         Result r = exec(cmd, 10000L);
-        boolean ok = r.exit == 0 && r.out != null && r.out.indexOf("DELETED") >= 0;
+        // MISSING 也算成功：文件已经不存在了（宿主先删掉了，或上一轮兜底删过）。
+        // 目标本来就是"这张图不在了"，所以只要"不在了"就算达成。
+        // —— 之前把 MISSING 当失败，导致明明删成功了还弹"截图删除可能失败"，
+        //    这个误报存在了好几个版本。
+        boolean gone = r.out != null
+                && (r.out.indexOf("DELETED") >= 0 || r.out.indexOf("MISSING") >= 0);
+        boolean ok = r.exit == 0 && gone;
         Logx.i("[clean] delete " + path + " -> " + (ok ? "OK" : "FAILED")
                 + " out=" + trim(r.out) + " err=" + trim(r.err));
         return ok;
