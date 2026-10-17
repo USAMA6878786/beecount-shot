@@ -41,7 +41,7 @@ final class HostPush {
 
     /** 从拦到的 MethodChannel 实例上取出 BinaryMessenger（字段名可能不同，按类型找）。 */
     static void captureFrom(Object methodChannel) {
-        if (methodChannel == null || messenger != null) {
+        if (methodChannel == null) {
             return;
         }
         try {
@@ -55,8 +55,13 @@ final class HostPush {
                         f.setAccessible(true);
                         Object v = f.get(methodChannel);
                         if (v != null) {
+                            // **每次都刷新**：FlutterEngine 会随 Activity 重建而更换，
+                            // 缓存旧的 messenger 等于推给一个已经死掉的引擎——v2.33 就是这么失败的。
+                            boolean changed = (v != messenger);
                             messenger = v;
-                            Logx.i("[push] captured BinaryMessenger from " + c.getSimpleName());
+                            if (changed) {
+                                Logx.i("[push] captured BinaryMessenger (engine may be new)");
+                            }
                             return;
                         }
                     }
@@ -94,9 +99,33 @@ final class HostPush {
             Constructor<?> ctor = channelClass.getConstructor(messengerClass, String.class);
             ctor.setAccessible(true);
             Object channel = ctor.newInstance(m, CHANNEL);
-            Method invoke = channelClass.getMethod("invokeMethod", String.class, Object.class);
+
+            // 带 Result 回调的版本：能直接看出 Dart 到底收下没有。
+            // success/error 之外还有一个 notImplemented —— 那是"Dart 侧没有这个处理器"，
+            // 也就是说消息压根没人接（引擎活着但 isolate 不认这个通道）。
+            Class<?> resultClass = Class.forName(
+                    "io.flutter.plugin.common.MethodChannel$Result", false,
+                    m.getClass().getClassLoader());
+            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                    resultClass.getClassLoader(), new Class<?>[]{resultClass},
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, Method method, Object[] args) {
+                            if ("notImplemented".equals(method.getName())) {
+                                Logx.w("[push] Dart 侧没有处理这个通道（notImplemented）：消息没人接");
+                            } else if ("success".equals(method.getName())) {
+                                Logx.i("[push] Dart 已接收（success）");
+                            } else if ("error".equals(method.getName())) {
+                                Logx.w("[push] Dart 处理出错：" + (args != null && args.length > 0
+                                        ? String.valueOf(args[0]) : "?"));
+                            }
+                            return null;
+                        }
+                    });
+            Method invoke = channelClass.getMethod(
+                    "invokeMethod", String.class, Object.class, resultClass);
             invoke.setAccessible(true);
-            invoke.invoke(channel, Const.TARGET_METHOD, path);
+            invoke.invoke(channel, Const.TARGET_METHOD, path, proxy);
             Logx.i("[push] pushed onScreenshotDetected: " + RootShell.baseName(path));
             return true;
         } catch (Throwable t) {
