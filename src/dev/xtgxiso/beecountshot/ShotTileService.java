@@ -183,8 +183,8 @@ public class ShotTileService extends TileService {
         // 上一次"点了没反应"就是后一种：日志里连一条 clicked 都没有，无从下手。
         clickFeedbackAt = System.currentTimeMillis();
         applyTile("正在截屏…", Tile.STATE_ACTIVE);
-        // 面板一点就收起，副标题根本看不见——所以再发一条通知，立刻给个"收到了"。
-        ShotNotify.start(app);
+        // 反馈用 Toast（截图结束后弹一句"截图成功/失败"），不再发通知。
+        // 注意 Android 12+ 会丢掉后台 Toast，所以要先授悬浮窗权限，见 ShotToast。
 
         // 尽早把接收器注册好：宿主检测到记账成功时会主动广播把我们从冻结中唤醒，
         // 如果这时接收器还没注册，那条唤醒广播就丢了。
@@ -305,7 +305,6 @@ public class ShotTileService extends TileService {
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
                         String via = "none";
-                        String shotPath = null;
 
                         // ---- 主路径：root 直接抓帧（v2.28 真机验证通过）----
                         //
@@ -319,7 +318,6 @@ public class ShotTileService extends TileService {
                             if (p != null) {
                                 sent = true;
                                 via = "screencap";
-                                shotPath = p;
                                 Logx.i("[tile] 截图路径=screencap 成功（"
                                         + (System.currentTimeMillis() - sc0) + "ms）");
                             } else {
@@ -351,12 +349,11 @@ public class ShotTileService extends TileService {
                         }
                         Logx.i("[tile] 截图结果：路径=" + via + " 成功=" + sent);
 
-                        // 通知里给结论：成功就把截图当大图预览塞进去（不用进相册也知道截到啥），
-                        // 失败就写清楚，别让用户对着"没反应"猜。
+                        // 用户只要知道"截图成没成"——一句话 Toast 就够。
                         if (sent) {
-                            ShotNotify.shotOk(app, shotPath);
+                            ShotToast.ok(app);
                         } else {
-                            ShotNotify.failed(app, "三条路都没成功，详情看日志");
+                            ShotToast.fail(app, "三条路都没成功");
                         }
 
                         // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
