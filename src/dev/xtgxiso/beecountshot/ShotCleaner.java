@@ -70,9 +70,10 @@ final class ShotCleaner {
                 if (!probe.received) {
                     Logx.w("[clean] 宿主无回应，无法判断截图监听是否在位");
                 } else if (!probe.activityAlive) {
-                    Logx.w("[clean] 蜜蜂记账的截图监听不在位（MainActivity 已被回收）"
-                            + " -> 本次很可能不会被记入");
-                    toast(ctx, "蜜蜂记账的截图监听未就绪，本次可能不会被记入（先打开一次它即可）");
+                    // 界面被回收 ≠ 监听不在位。v2.32 起宿主开了"引擎保活"：
+                    // MainActivity 没了但 Dart isolate 还在，观察者照常收截图。
+                    // 所以这里只记一笔，不再弹"本次可能不会被记入"吓人。
+                    Logx.i("[clean] MainActivity 已回收；引擎保活生效的话截图监听仍在位");
                     // 让磁贴的副标题也立刻变成"未就绪"——Toast 在部分系统上会被悄悄丢掉，
                     // 而磁贴就在用户手指底下，比 Toast 可靠。requestListeningState 会触发
                     // onStartListening，那里会重新查一次宿主状态并刷新副标题。
