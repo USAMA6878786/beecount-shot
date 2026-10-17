@@ -13,6 +13,7 @@ public final class Prefs {
     private static final String KEY_PRECISE = "precise_partial";
     private static final String KEY_HOST_PKG = "host_pkg";
     private static final String KEY_KEEP_ALIVE = "keep_alive";
+    private static final String KEY_SHARE_TO_HOST = "share_to_host";
     private static final String KEY_NOTIF_ASKED = "notif_asked";
 
     // ---------------------------------------------------------------- 关于「等待时长」
@@ -90,6 +91,29 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putBoolean(KEY_NOTIF_ASKED, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 是否用「系统分享」把截图交给蜜蜂记账（{@code ACTION_SEND}）。
+     *
+     * <p>默认关。开了之后：截完图 → 分享给蜜蜂记账 → 它自己启动、自己识别、自己落库。
+     * **零复刻、不碰它的数据库**，代价是会把它带到前台（约 2~4 秒）。
+     */
+    static boolean shareToHost(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_SHARE_TO_HOST, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static void setShareToHost(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_SHARE_TO_HOST, v).apply();
         } catch (Throwable ignored) {
         }
     }
