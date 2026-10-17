@@ -33,17 +33,6 @@ public final class Const {
      */
     public static final String ACTION_ARM = "dev.xtgxiso.beecountshot.ARM";
 
-    /**
-     * 模块 App → 宿主：**请把这张图主动推给 Dart 侧识别**。
-     *
-     * <p>兜底用：蜜蜂记账的截图观察者会在 MainActivity 销毁时被无条件注销，
-     * 那之后它自己永远感知不到截图。但 Dart 侧的 MethodChannel 处理器还在（引擎保活），
-     * 所以让宿主代替观察者"喊一声"。
-     */
-    public static final String ACTION_PUSH = "dev.xtgxiso.beecountshot.PUSH_SHOT";
-
-    /** {@link #ACTION_PUSH} 带过来的截图路径。 */
-    public static final String EXTRA_PUSH_PATH = "push_path";
 
     /** 广播里携带的放行截止时间。 */
     public static final String EXTRA_UNTIL = "until_ms";
