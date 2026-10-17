@@ -39,6 +39,15 @@
         不给也能用——ShotWatcher 会报告不可用，自动退回 su 扫描。
     -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!--
+        悬浮窗权限：**只为了"后台也能弹 Toast"**。
+        Android 12+ 会直接把后台应用弹出的 Toast 丢掉（不报错、不显示），
+        而点磁贴时模块就在后台——没有这个权限，截图结果的那句提示根本看不到。
+        模块有 root，会用 `appops set ... SYSTEM_ALERT_WINDOW allow` 自己授一次。
+        如果你不想给：系统设置里可以关掉，截图功能完全不受影响，只是看不到那句提示。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
