@@ -68,6 +68,7 @@ final class HostBridge {
 
             // 接收器注册留在当前线程（很轻，而且必须尽早，否则第一条广播会丢）。
             registerArmReceiver(app);
+            registerPushReceiver(app);
             registerQueryReceiver(app);
             registerWidgetQueryReceiver(app);
 
@@ -128,6 +129,39 @@ final class HostBridge {
      * <p>这是跨进程通信的主通道。之前用"模块 App 拿 root 去读宿主的文件"是行不通的：
      * su 在全局挂载命名空间，看不到应用的数据目录。
      */
+    /**
+     * 接收模块 App 的「请把这张图推给 Dart」请求。
+     *
+     * <p>为什么需要这条通道：蜜蜂记账的截图观察者会在界面销毁时被注销，
+     * 再也不会自己发现截图。而 Dart 侧的识别入口（MethodChannel 处理器）还在——
+     * 所以由我们代替观察者，把"有新截图"这条消息发进去。
+     *
+     * <p>安全：这条消息最终还是要过我们自己的通道闸门（{@code ArmSignal.consume}），
+     * 没有放行额度就会被拦掉，所以别的应用即使伪造这条广播也顶不上用。
+     */
+    private static void registerPushReceiver(Context app) {
+        try {
+            IntentFilter filter = new IntentFilter(Const.ACTION_PUSH);
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    String path = intent == null ? null
+                            : intent.getStringExtra(Const.EXTRA_PUSH_PATH);
+                    Logx.i("[push] 收到推送请求: " + path);
+                    HostPush.push(path);
+                }
+            };
+            if (Build.VERSION.SDK_INT >= 33) {
+                app.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                app.registerReceiver(receiver, filter);
+            }
+            Logx.i("[bridge] push receiver registered");
+        } catch (Throwable t) {
+            Logx.e("[bridge] register push receiver failed", t);
+        }
+    }
+
     private static void registerQueryReceiver(Context app) {
         try {
             IntentFilter filter = new IntentFilter(Const.ACTION_QUERY);
