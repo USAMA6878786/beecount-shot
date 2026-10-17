@@ -6,6 +6,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
 /**
  * 「记账成功后自动删除这张截图」（模块 App 侧的兜底路径）。
  *
@@ -24,6 +30,18 @@ import android.widget.Toast;
  * 而模块 App 退回后台会被冻结，见 {@link HostWatcher}）。这里只处理"宿主没 root"的兜底。
  *
  * <p>确认不了就原样保留。宁可漏删，绝不误删。
+ *
+ * <h3>为什么是「一个工人 + 队列」而不是「每次点击一个线程」</h3>
+ * 原来每点一次磁贴就起一个线程、各活 60 秒、各自每 5 秒开一次 root shell 扫盘。
+ * **连点 10 次就是 10 个线程并发扫同一个目录**——纯浪费，而且连点时正是最需要稳的时候。
+ *
+ * <p>现在只有一个工人线程，所有点击排队给它：
+ * <ul>
+ *   <li>宿主的推送（广播）**一次 await 服务所有任务**；</li>
+ *   <li>扫盘**每轮只做一次**，覆盖所有任务的时间窗并集；</li>
+ *   <li>同一张图在同一轮里**只查一次**宿主（结果共享给各任务）。</li>
+ * </ul>
+ * 队列空了工人就退出，不常驻占资源。
  */
 final class ShotCleaner {
 
@@ -33,8 +51,11 @@ final class ShotCleaner {
     /** 主动查询宿主的超时。 */
     private static final long QUERY_TIMEOUT_MS = 3000L;
 
-    /** 总等待上限。 */
+    /** 单个任务的总等待上限。 */
     private static final long MAX_WAIT_MS = 60000L;
+
+    /** 扫盘的全局间隔（一个工人服务所有任务，所以只需要这么一次）。 */
+    private static final long SCAN_INTERVAL_MS = 5000L;
 
     /**
      * "按时间认领自己那一张"的窗口上界（相对本次点击时刻）。
@@ -50,149 +71,258 @@ final class ShotCleaner {
      */
     private static final long MINE_WINDOW_MS = 6000L;
 
+    // ---------------------------------------------------------------- 队列
+
+    private static final Object LOCK = new Object();
+    private static final List<Task> TASKS = new ArrayList<Task>();
+    private static Thread worker;
+
+    /** 一次点击对应一个任务。集合只在工人线程里读写，不需要额外加锁。 */
+    private static final class Task {
+        long shotAt;
+        long deadline;
+        final Set<String> handled = new HashSet<String>();
+        final Set<String> confirmed = new LinkedHashSet<String>();
+        final Set<String> mine = new LinkedHashSet<String>();
+    }
+
     /**
-     * @param shotTime 本次截图流程的起始时刻（毫秒）。用来定位"本次触发后新增的成品文件"。
+     * 提交一次"这次点击产生的截图要删掉"的任务。**不阻塞**，立刻返回。
+     *
+     * @param shotTime 本次截图流程的起始时刻（毫秒）
      */
-    static void run(final Context ctx, final long shotTime) {
+    static void submit(Context ctx, long shotTime) {
+        if (ctx == null) {
+            return;
+        }
+        final Context app = ctx.getApplicationContext() != null
+                ? ctx.getApplicationContext() : ctx;
+        Task t = new Task();
+        t.shotAt = shotTime;
+        t.deadline = System.currentTimeMillis() + MAX_WAIT_MS;
+        synchronized (LOCK) {
+            TASKS.add(t);
+            if (worker != null) {
+                return;
+            }
+            worker = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    loop(app);
+                }
+            }, "bee-cleaner");
+            worker.setDaemon(true);
+            worker.start();
+        }
+        Logx.i("[clean] 工人线程启动（队列长度 " + TASKS.size() + "）");
+    }
+
+    // ---------------------------------------------------------------- 工人
+
+    private static void loop(Context ctx) {
         try {
             // 必须尽早注册好接收器，否则宿主的唤醒广播没人接。
             ShotBridge.ensureReceiver(ctx);
+            probeHostOnce(ctx);
 
-            // 先确认蜜蜂记账的截图监听是否在位。
-            //
-            // 它的监听器挂在主界面上，主界面被系统回收后就彻底感知不到截图——这时不管
-            // 我们放不放行都不会记账。这种情况早点告诉用户，比默默失败好。
-            //
-            // 注：这里刻意用"检测并提示"而不是"自动把蜜蜂记账拉到前台"——拉起 Activity
-            // 必然会让它的界面跳到前台，那正是用户不想要的。
-            try {
-                ShotBridge.Answer probe = ShotBridge.query(ctx, "", 2500L);
-                if (!probe.received) {
-                    Logx.w("[clean] 宿主无回应，无法判断截图监听是否在位");
-                } else if (!probe.activityAlive) {
-                    // 界面被回收 ≠ 监听不在位。v2.32 起宿主开了"引擎保活"：
-                    // MainActivity 没了但 Dart isolate 还在，观察者照常收截图。
-                    // 所以这里只记一笔，不再弹"本次可能不会被记入"吓人。
-                    Logx.i("[clean] MainActivity 已回收；引擎保活生效的话截图监听仍在位");
-                    // 让磁贴的副标题也立刻变成"未就绪"——Toast 在部分系统上会被悄悄丢掉，
-                    // 而磁贴就在用户手指底下，比 Toast 可靠。requestListeningState 会触发
-                    // onStartListening，那里会重新查一次宿主状态并刷新副标题。
-                    ShotTileService.requestRefresh(ctx);
-                } else {
-                    Logx.i("[clean] 蜜蜂记账截图监听在位，正常");
-                }
-            } catch (Throwable ignored) {
-            }
-
-            // 已经处理完的、以及"宿主确认过身份但还没出结果"的。
-            // 用集合而不是单个变量：连点多下时一次会有好几张图要管。
-            final java.util.Set<String> handled = new java.util.HashSet<String>();
-            final java.util.Set<String> confirmed = new java.util.LinkedHashSet<String>();
-            // "我们自己截的那一张"——按时间窗认领，见下面的说明。
-            final java.util.Set<String> mine = new java.util.LinkedHashSet<String>();
             long lastScan = 0L;
-            long deadline = System.currentTimeMillis() + MAX_WAIT_MS;
 
-            while (System.currentTimeMillis() < deadline) {
-                // ---- 主路径：等宿主主动推送（会唤醒被冻结的进程）----
+            while (true) {
+                List<Task> snapshot;
+                synchronized (LOCK) {
+                    if (TASKS.isEmpty()) {
+                        worker = null;
+                        Logx.i("[clean] 队列已空，工人线程退出");
+                        return;
+                    }
+                    snapshot = new ArrayList<Task>(TASKS);
+                }
+
+                // ---- 1) 宿主推送：一次 await 服务所有任务 ----
                 ShotBridge.Answer push = ShotBridge.await(AWAIT_MS);
                 if (push.received) {
-                    // 宿主主动推了结果 —— 这次就不用再扫盘 + 逐个查询了。
-                    // 原来每轮无条件扫盘（每个候选一次 3 秒超时的查询），
-                    // 日志里 "no answer from host" 有 20 次，多数是这种自己挤出来的。
-                    if (handleIfDecided(ctx, push, "push")) {
-                        return;
+                    if (push.success && push.path != null) {
+                        // 推送里的路径是"可删"的结论，处理一次即可；各任务只需记为已处理，
+                        // 避免后面扫盘时重复删。
+                        if (handleIfDecided(ctx, push, "push")) {
+                            for (Task t : snapshot) {
+                                t.handled.add(push.path);
+                            }
+                        }
                     }
                     continue;
                 }
 
-                // ---- 兜底：把"比本次点击新的截图"**全部**过一遍 ----
-                //
-                // 这里以前只取"最新的那一张"。连点多下时，每个清理线程都盯着同一张最新图，
-                // 更早的那些谁都不管——真机日志里因此有 5 张放行过的图一直没被删。
-                // 现在逐个确认。扫描本身要开一次 root shell，所以限流到 5 秒一次。
+                // ---- 2) 扫盘：**每轮只做一次**，覆盖所有任务时间窗的并集 ----
                 long now = System.currentTimeMillis();
-                if (now - lastScan < 5000L) {
-                    try {
-                        Thread.sleep(300L);
-                    } catch (InterruptedException ignored) {
-                    }
+                if (now - lastScan < SCAN_INTERVAL_MS) {
+                    sleepQuietly(300L);
                     continue;
                 }
                 lastScan = now;
 
-                // 时间窗：点下磁贴之后几秒内冒出来的图，基本只可能是我们那一张。
-                // 上界给 6 秒——最快的无障碍直调约 0.4 秒落盘，最慢的 root 兜底也不到 4 秒。
-                java.util.List<String> cands =
-                        RootShell.findScreenshotsSince(shotTime, shotTime + MINE_WINDOW_MS);
-                for (int i = 0; i < cands.size(); i++) {
-                    String c = cands.get(i);
-                    if (handled.contains(c)) {
-                        continue;
-                    }
-                    mine.add(c);
-                    ShotBridge.Answer answer = ShotBridge.query(ctx, c, QUERY_TIMEOUT_MS);
-                    if (!answer.received) {
-                        Logx.w("[clean] 宿主无回应（模块可能没被注入 / 作用域没勾对）");
-                        continue;
-                    }
-                    Logx.i("[clean] query " + RootShell.baseName(c)
-                            + " SUCCESS=" + answer.success + " processed=" + answer.processed
-                            + " deletedByHost=" + answer.deleted);
-                    if (handleIfDecided(ctx, answer, "query")) {
-                        handled.add(c);
-                        continue;
-                    }
-                    if (answer.processed) {
-                        // 宿主确认过身份（这张确实是我们闸门放行给蜜蜂记账的），只是还没出结果
-                        confirmed.add(c);
-                    }
+                long from = Long.MAX_VALUE;
+                long to = 0L;
+                for (Task t : snapshot) {
+                    from = Math.min(from, t.shotAt);
+                    to = Math.max(to, t.shotAt + MINE_WINDOW_MS);
                 }
-            }
-            // ---- 超时兜底：把"确认过身份"的**全部**删掉 ----
-            //
-            // 为什么要这样：连点时蜜蜂记账自己会**防抖**（它日志里有"防抖跳过：距离上次处理
-            // 仅 21ms"），两次挨着的截图它可能只处理一次、只写一条「落库完成」——另一张
-            // 永远等不到结果，于是永远留在相册里。真机日志里 9 次"超时保留"就是这么来的。
-            //
-            // 等满 60 秒之后，任何该读这些图的动作早就读完了，所以删是安全的。
-            // 但仍然**只删宿主确认过身份的那些**（processed=true = 这张确实是我们闸门
-            // 放行给蜜蜂记账的），避免误删用户自己手动截的图。
-            // 两类都算"确认过是我们自己的"：
-            //   ① 宿主明确确认过身份（processed=true，闸门放行过的那张）；
-            //   ② 落在本次点击后 6 秒时间窗里的——**宿主没确认也不影响**，
-            //      因为蜜蜂记账的防抖会让一部分截图压根不上报。
-            java.util.Set<String> allMine = new java.util.LinkedHashSet<String>(confirmed);
-            allMine.addAll(mine);
+                List<String> cands = from == Long.MAX_VALUE
+                        ? new ArrayList<String>()
+                        : RootShell.findScreenshotsSince(from, to);
 
-            int swept = 0;
-            int sweptByTime = 0;
-            for (String c : allMine) {
-                if (handled.contains(c) || !RootShell.isSafeScreenshotPath(c)) {
-                    continue;
+                // 同一张图这一轮只查一次宿主，结果共享
+                java.util.Map<String, ShotBridge.Answer> cache =
+                        new java.util.HashMap<String, ShotBridge.Answer>();
+
+                for (int i = 0; i < snapshot.size(); i++) {
+                    Task t = snapshot.get(i);
+                    for (int j = 0; j < cands.size(); j++) {
+                        String c = cands.get(j);
+                        if (t.handled.contains(c)) {
+                            continue;
+                        }
+                        // 只认"本次点击之后、且落在认领窗口内"的图。
+                        // 时间直接从**文件名**里解析（Screenshot_yyyyMMdd-HHmmss），
+                        // 不再为每张图单独开一次 root shell 去 stat。
+                        long mtime = timeFromName(c);
+                        if (mtime > 0L && (mtime < t.shotAt - 1000L
+                                || mtime > t.shotAt + MINE_WINDOW_MS)) {
+                            continue;
+                        }
+                        t.mine.add(c);
+
+                        ShotBridge.Answer answer = cache.get(c);
+                        if (answer == null) {
+                            answer = ShotBridge.query(ctx, c, QUERY_TIMEOUT_MS);
+                            cache.put(c, answer);
+                        }
+                        if (!answer.received) {
+                            continue;
+                        }
+                        if (handleIfDecided(ctx, answer, "query")) {
+                            t.handled.add(c);
+                            continue;
+                        }
+                        if (answer.processed) {
+                            t.confirmed.add(c);
+                        }
+                    }
                 }
-                boolean byTime = !confirmed.contains(c);
-                Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果 -> 直接删"
-                        + (byTime ? "（按时间窗认领：点磁贴后 6 秒内出现的）" : "（宿主确认过身份）")
-                        + "：" + RootShell.baseName(c));
-                doDelete(ctx, c, 0L);
-                swept++;
-                if (byTime) {
-                    sweptByTime++;
+
+                // ---- 3) 到期的任务：超时兜底，然后出队 ----
+                for (int i = 0; i < snapshot.size(); i++) {
+                    Task t = snapshot.get(i);
+                    if (System.currentTimeMillis() < t.deadline) {
+                        continue;
+                    }
+                    sweep(ctx, t);
+                    synchronized (LOCK) {
+                        TASKS.remove(t);
+                    }
                 }
             }
-            Logx.i("[clean] 超时结束（" + MAX_WAIT_MS + "ms）：宿主确认 " + confirmed.size()
-                    + " 张、时间窗认领 " + mine.size() + " 张，共补删 " + swept
-                    + " 张（其中按时间认领 " + sweptByTime + " 张），其余保留");
         } catch (Throwable t) {
-            Logx.e("[clean] unexpected failure; screenshot kept", t);
+            Logx.e("[clean] 工人线程异常退出", t);
+            synchronized (LOCK) {
+                worker = null;
+            }
         }
     }
 
     /**
+     * 超时兜底：把"确认过身份"的**全部**删掉。
+     *
+     * <p>为什么要这样：连点时蜜蜂记账自己会**防抖**（它日志里有"防抖跳过：距离上次处理
+     * 仅 21ms"），两次挨着的截图它可能只处理一次、只写一条「落库完成」——另一张
+     * 永远等不到结果，于是永远留在相册里。
+     *
+     * <p>等满 60 秒之后，任何该读这些图的动作早就读完了，所以删是安全的。
+     * 两类都算"确认过是我们自己的"：
+     * <ol>
+     *   <li>宿主明确确认过身份（processed=true，闸门放行过的那张）；</li>
+     *   <li>落在本次点击后 6 秒时间窗里的——**宿主没确认也不影响**，
+     *       因为蜜蜂记账的防抖会让一部分截图压根不上报。</li>
+     * </ol>
+     */
+    private static void sweep(Context ctx, Task t) {
+        Set<String> allMine = new LinkedHashSet<String>(t.confirmed);
+        allMine.addAll(t.mine);
+        int swept = 0;
+        int byTime = 0;
+        for (String c : allMine) {
+            if (t.handled.contains(c) || !RootShell.isSafeScreenshotPath(c)) {
+                continue;
+            }
+            boolean isByTime = !t.confirmed.contains(c);
+            Logx.w("[clean] 等满 " + MAX_WAIT_MS + "ms 仍没等到结果 -> 直接删"
+                    + (isByTime ? "（按时间窗认领）" : "（宿主确认过身份）")
+                    + "：" + RootShell.baseName(c));
+            doDelete(ctx, c, 0L);
+            swept++;
+            if (isByTime) {
+                byTime++;
+            }
+        }
+        Logx.i("[clean] 任务结束：宿主确认 " + t.confirmed.size() + " 张、时间窗认领 "
+                + t.mine.size() + " 张，共补删 " + swept + " 张（按时间 " + byTime + " 张）");
+    }
+
+    /** 工人启动时探一次宿主状态。**每个工人只做一次**，不是每次点击都做。 */
+    private static void probeHostOnce(Context ctx) {
+        try {
+            ShotBridge.Answer probe = ShotBridge.query(ctx, "", 2500L);
+            if (!probe.received) {
+                Logx.w("[clean] 宿主无回应，无法判断截图监听是否在位");
+            } else if (!probe.activityAlive) {
+                // 界面被回收 ≠ 监听不在位（多数情况下观察者还在，只是界面没了）。
+                // 所以只记一笔，不再弹"本次可能不会被记入"吓人。
+                Logx.i("[clean] MainActivity 已回收（观察者通常仍在位）");
+                ShotTileService.requestRefresh(ctx);
+            } else {
+                Logx.i("[clean] 蜜蜂记账截图监听在位，正常");
+            }
+        } catch (Throwable t) {
+            Logx.w("[clean] 探测宿主失败：" + t.getMessage());
+        }
+    }
+
+    /**
+     * 从文件名里解析时间戳：{@code Screenshot_20261017-145911_...} → 毫秒。
+     *
+     * <p>系统截图和我们自己写进相册的图都遵循这个命名，所以能省掉"每张图一次 su stat"。
+     * 解析不出来返回 0（调用方会当作"无法判定"，按认领处理）。
+     */
+    private static long timeFromName(String path) {
+        try {
+            String base = RootShell.baseName(path);
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(\\d{8})-(\\d{6})").matcher(base);
+            if (!m.find()) {
+                return 0L;
+            }
+            java.text.SimpleDateFormat f =
+                    new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US);
+            f.setLenient(false);
+            return f.parse(m.group(1) + "-" + m.group(2)).getTime();
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ignored) {
+        }
+    }
+
+    // ---------------------------------------------------------------- 执行
+
+    /**
      * 收到宿主的回答后处理。
      *
-     * @return true 表示本次流程结束（已删、已由宿主删除、或确认不该删）
+     * @return true 表示已经处理完（已删、已由宿主删除、或确认不该删）
      */
     private static boolean handleIfDecided(Context ctx, ShotBridge.Answer a, String from) {
         if (a == null || !a.received || !a.success) {
@@ -200,8 +330,8 @@ final class ShotCleaner {
         }
         Logx.i("[clean] 宿主判定可删（来自 " + from + "）：" + a.path);
 
-            if (a.deleted) {
-                Logx.i("[clean] 宿主已自行删除，无需重复处理");
+        if (a.deleted) {
+            Logx.i("[clean] 宿主已自行删除，无需重复处理");
             if (a.path != null && a.path.length() > 8) {
                 purgeGallery(ctx, a.path);
             }
