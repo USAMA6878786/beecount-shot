@@ -51,24 +51,7 @@ final class ScreencapShot {
      *
      * @return 成功时返回媒体库里的**绝对路径**（后续删除/日志要用）；失败返回 null
      */
-    /** 最近一次插入的媒体库 uri（分享模式要用）。 */
-    private static volatile Uri lastUri = null;
-
-    static Uri lastUri() {
-        return lastUri;
-    }
-
     static String take(Context c) {
-        return take(c, false);
-    }
-
-    /**
-     * @param neutralName true = 用不含 "screenshot" 的文件名。
-     *
-     * <p>分享模式必须用它：否则图片一落进相册，蜜蜂记账的**观察者**也会认领一次，
-     * 加上分享进去的那次就是**重复记账**。中性名能让观察者忽略它。
-     */
-    static String take(Context c, boolean neutralName) {
         File tmp = new File(c.getCacheDir(), "prod_shot.png");
         //noinspection ResultOfMethodCallIgnored
         tmp.delete();
@@ -88,7 +71,7 @@ final class ScreencapShot {
                 // 让蜜蜂记账照常跑一遍识别——它识别不出来就会按"未识别"处理。
                 Logx.w("[screencap] 体积偏小（" + size + " 字节），可能是安全窗口截出的黑图");
             }
-            return insertIntoGallery(c, tmp, neutralName);
+            return insertIntoGallery(c, tmp);
         } catch (Throwable t) {
             Logx.e("[screencap] 失败", t);
             return null;
@@ -99,11 +82,9 @@ final class ScreencapShot {
     }
 
     /** 把抓到的 png 作为"一张截图"写进 DCIM/Screenshots，并返回它在媒体库里的路径。 */
-    private static String insertIntoGallery(Context c, File png, boolean neutralName) {
-        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
-        String name = neutralName
-                ? "BeecountShot_" + stamp + ".png"
-                : "Screenshot_" + stamp + "_beecountshot.png";
+    private static String insertIntoGallery(Context c, File png) {
+        String name = "Screenshot_" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+                .format(new Date()) + "_beecountshot.png";
         ContentResolver cr = c.getContentResolver();
         Uri uri = null;
         try {
@@ -127,7 +108,6 @@ final class ScreencapShot {
             done.put(MediaStore.Images.Media.IS_PENDING, 0);
             cr.update(uri, done, null, null);
 
-            lastUri = uri;
             String path = queryData(cr, uri);
             Logx.i("[screencap] 已写入相册 name=" + name + " path=" + path);
             return path != null ? path : guessPath(name);
