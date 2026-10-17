@@ -95,8 +95,14 @@ final class ShotCleaner {
             while (System.currentTimeMillis() < deadline) {
                 // ---- 主路径：等宿主主动推送（会唤醒被冻结的进程）----
                 ShotBridge.Answer push = ShotBridge.await(AWAIT_MS);
-                if (handleIfDecided(ctx, push, "push")) {
-                    return;
+                if (push.received) {
+                    // 宿主主动推了结果 —— 这次就不用再扫盘 + 逐个查询了。
+                    // 原来每轮无条件扫盘（每个候选一次 3 秒超时的查询），
+                    // 日志里 "no answer from host" 有 20 次，多数是这种自己挤出来的。
+                    if (handleIfDecided(ctx, push, "push")) {
+                        return;
+                    }
+                    continue;
                 }
 
                 // ---- 兜底：把"比本次点击新的截图"**全部**过一遍 ----
