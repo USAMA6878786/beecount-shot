@@ -312,12 +312,19 @@ public class ShotTileService extends TileService {
                         // 也不走无障碍（服务会掉线）——抓完自己往相册插一条截图，
                         // 蜜蜂记账的观察者照常收到通知。
                         // 任何一步失败都返回 null，自动退回下面两条老路。
+                        final boolean shareMode = Prefs.shareToHost(app);
                         if (ScreencapShot.isAvailable(app)) {
                             long sc0 = System.currentTimeMillis();
-                            String p = ScreencapShot.take(app);
+                            // 分享模式用中性文件名：否则图片进相册会被观察者认领一次，
+                            // 加上分享进去的那次就是重复记账。
+                            String p = ScreencapShot.take(app, shareMode);
                             if (p != null) {
                                 sent = true;
-                                via = "screencap";
+                                via = shareMode ? "screencap+share" : "screencap";
+                                if (shareMode) {
+                                    ShareShot.send(app, ScreencapShot.lastUri());
+                                    ShareShot.scheduleDelete(p);
+                                }
                                 Logx.i("[tile] 截图路径=screencap 成功（"
                                         + (System.currentTimeMillis() - sc0) + "ms）");
                             } else {
