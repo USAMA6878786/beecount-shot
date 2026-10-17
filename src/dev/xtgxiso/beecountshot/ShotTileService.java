@@ -380,6 +380,16 @@ public class ShotTileService extends TileService {
                                         Logx.i("[push] 宿主已认领这张图（观察者在线），不推");
                                         return;
                                     }
+                                    if (!a.received) {
+                                        // 广播接收器是**动态注册**的：宿主进程不在就没人接，
+                                        // 消息会静默丢掉。这一行能直接把这种情况和"引擎失效"分开。
+                                        Logx.e("[push] 宿主进程无回应（接收器不在）-> 推送不会有人接");
+                                    }
+                                    if (!a.received) {
+                                        // 接收器是**动态注册**的：宿主进程不在就没人接，消息会静默丢掉。
+                                        // 这一行能把它和"引擎失效"直接分开。
+                                        Logx.e("[push] 宿主进程无回应（接收器不在）-> 推送不会有人接");
+                                    }
                                     Logx.w("[push] 宿主没认领（观察者多半失效）-> 主动推一条");
                                     try {
                                         Intent p = new Intent(Const.ACTION_PUSH);
