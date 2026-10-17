@@ -180,6 +180,14 @@ public class KeepAliveService extends Service {
     public void onCreate() {
         super.onCreate();
         ensureChannel(this);
+        // 后台 Toast 在 Android 12+ 需要悬浮窗权限；服务起来时顺手授一次（放在子线程，
+        // 因为要开一次 root shell）。
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ShotToast.ensureOverlayAllowed(KeepAliveService.this);
+            }
+        }, "bee-overlay-grant").start();
     }
 
     @Override
