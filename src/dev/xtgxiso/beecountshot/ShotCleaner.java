@@ -27,8 +27,8 @@ import android.widget.Toast;
  */
 final class ShotCleaner {
 
-    /** 等宿主主动推送的时长。被唤醒时立即返回。 */
-    private static final long AWAIT_MS = 15000L;
+    /** 等宿主推送的时长。**故意设得很短**：识别一完成就删，不能等宿主慢慢推。 */
+    private static final long AWAIT_MS = 2000L;
 
     /** 主动查询宿主的超时。 */
     private static final long QUERY_TIMEOUT_MS = 3000L;
