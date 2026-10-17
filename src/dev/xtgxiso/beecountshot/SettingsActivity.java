@@ -157,6 +157,40 @@ public class SettingsActivity extends Activity {
         // 跟控制中心面板收没收干净没有关系——那段等待是配合老路径的，没有存在理由了。
         // 「收起面板」这个动作本身**保留**（不收的话控制面板会出现在截图里）。
 
+        // ---------------- 截图确认提速 ----------------
+        heading(root, "截图确认提速");
+        body(root, "打开后模块会**自己监听相册**，用来判断「刚才那张截图存好了没有」，"
+                + "不再每次都让 root 去扫文件目录。\n\n"
+                + "效果：确认环节从 200~350 毫秒降到几十毫秒，一次点击少起 2~3 个 root 进程。\n\n"
+                + "需要「读取照片」权限（只用来判断最新一张截图是否落盘，不外传）。"
+                + "**不给也没关系**——会自动退回原来的扫描方式，只是慢一点。");
+        final boolean hasMedia = ShotWatcher.hasPermission(this);
+        CheckBox fastProbe = new CheckBox(this);
+        fastProbe.setText(hasMedia ? "已开启（相册监听生效）" : "开启相册监听（需要「读取照片」权限）");
+        fastProbe.setChecked(hasMedia);
+        fastProbe.setEnabled(!hasMedia);
+        fastProbe.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                requestMediaPermissionIfNeeded();
+            }
+        });
+        root.addView(fastProbe);
+        if (hasMedia) {
+            ShotWatcher.ensureRegistered(this);
+        }
+
+        button(root, "验证 screencap 截图链路（试验）", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                runScreencapProbe();
+            }
+        });
+        body(root, "**这是试验，不会改动现有功能。** 点它会：① 用 root 直接抓一帧；"
+                + "② 把这张图作为「系统截图」写进相册；③ 再从相册读回来校验。\n\n"
+                + "如果三步都通过，说明以后可以**不用按键、不用无障碍**来截屏——"
+                + "那两条路正是目前「偶尔没反应 / 特别慢」的来源。结果会弹框显示，也不会留下测试图。");
+
         // ---------------- 常驻运行 ----------------
         heading(root, "常驻运行");
         body(root, "打开后模块会挂一个前台服务，让进程不被系统回收。好处有两个：\n"
@@ -613,6 +647,77 @@ public class SettingsActivity extends Activity {
                     "自动添加失败，请手动：控制中心 → 编辑 → 找到「记账截图」拖上去",
                     Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** 申请「读取照片」权限的请求码（跟通知权限的 1001 区分开）。 */
+    private static final int REQ_MEDIA = 1002;
+
+    /** 申请「读取照片」权限（用于 MediaStore 快路）。拒绝不影响功能，只是退回 su 轮询。 */
+    private void requestMediaPermissionIfNeeded() {
+        try {
+            String perm = Build.VERSION.SDK_INT >= 33
+                    ? "android.permission.READ_MEDIA_IMAGES"
+                    : "android.permission.READ_EXTERNAL_STORAGE";
+            if (checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                ShotWatcher.ensureRegistered(this);
+                showToast("相册监听已开启");
+                return;
+            }
+            requestPermissions(new String[]{perm}, REQ_MEDIA);
+        } catch (Throwable t) {
+            Logx.w("[settings] request media permission failed: " + t.getMessage());
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] granted) {
+        super.onRequestPermissionsResult(code, perms, granted);
+        if (code == REQ_MEDIA) {
+            boolean ok = granted.length > 0
+                    && granted[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Logx.i("[settings] media permission granted=" + ok);
+            if (ok) {
+                ShotWatcher.ensureRegistered(this);
+                showToast("相册监听已开启，截屏确认会更快");
+            } else {
+                showToast("没给权限也没关系，会自动退回原来的方式");
+            }
+            recreate();
+        } else if (code == KeepAliveService.REQ_NOTIF) {
+            recreate();
+        }
+    }
+
+    private void showToast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 跑一次 screencap 验证（子线程，完成后弹框）。 */
+    private void runScreencapProbe() {
+        final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
+        pd.setMessage("正在验证 screencap…");
+        pd.setCancelable(false);
+        pd.show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final String report = ScreencapProbe.run(SettingsActivity.this);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            pd.dismiss();
+                        } catch (Throwable ignored) {
+                        }
+                        new android.app.AlertDialog.Builder(SettingsActivity.this)
+                                .setTitle("screencap 验证结果")
+                                .setMessage(report)
+                                .setPositiveButton("知道了", null)
+                                .show();
+                    }
+                });
+            }
+        }, "bee-screencap-probe").start();
     }
 
     /**
