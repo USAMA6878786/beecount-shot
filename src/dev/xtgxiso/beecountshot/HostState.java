@@ -40,6 +40,20 @@ final class HostState {
         return activityAlive;
     }
 
+    /** 引擎保活是否已经生效过（hook 把 shouldDestroyEngineWithHost 改成 false 时置位）。 */
+    private static volatile boolean engineKeptAlive = false;
+
+    static void onEngineKeptAlive() {
+        if (!engineKeptAlive) {
+            engineKeptAlive = true;
+            HostTelemetry.put("engine_kept", "1");
+        }
+    }
+
+    static boolean isEngineKeptAlive() {
+        return engineKeptAlive;
+    }
+
     private HostState() {
     }
 }
