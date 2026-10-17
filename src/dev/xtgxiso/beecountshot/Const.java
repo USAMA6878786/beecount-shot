@@ -33,6 +33,18 @@ public final class Const {
      */
     public static final String ACTION_ARM = "dev.xtgxiso.beecountshot.ARM";
 
+    /**
+     * 模块 App → 宿主：**请把这张图主动推给 Dart 侧识别**。
+     *
+     * <p>兜底用：蜜蜂记账的截图观察者会在 MainActivity 销毁时被无条件注销，
+     * 那之后它自己永远感知不到截图。但 Dart 侧的 MethodChannel 处理器还在（引擎保活），
+     * 所以让宿主代替观察者"喊一声"。
+     */
+    public static final String ACTION_PUSH = "dev.xtgxiso.beecountshot.PUSH_SHOT";
+
+    /** {@link #ACTION_PUSH} 带过来的截图路径。 */
+    public static final String EXTRA_PUSH_PATH = "push_path";
+
     /** 广播里携带的放行截止时间。 */
     public static final String EXTRA_UNTIL = "until_ms";
 
@@ -198,10 +210,13 @@ public final class Const {
      * 但换成无障碍直调之后截屏**发得更早**，实测会拍到"控制中心刚收起、下层界面还在
      * 过渡/模糊状态"的那一帧——图是截到了，但看不清。
      *
-     * <p>100ms 是实测刚够跨过那个过渡帧、又基本感觉不到的量。**加的是固定值，不是设置项**：
-     * 之前那组 150/300/600/900/1300 的档位已经删了，没必要为 100ms 再开一个开关。
+     * <p>先定了 100ms，实测**少部分图还是有点模糊**（不同界面过渡时长不一样，
+     * 有些 App 的模糊/淡出比控制中心收面板更慢），所以加到 **150ms**。
+     *
+     * <p>**加的是固定值，不是设置项**：之前那组 150/300/600/900/1300 的档位已经删了，
+     * 没必要再为几十毫秒开一个开关。如果以后还觉得糊，继续在这个常量上调。
      */
-    public static final long SHOT_SETTLE_MS = 100L;
+    public static final long SHOT_SETTLE_MS = 150L;
 
     /**
      * {@code Intent.FLAG_RECEIVER_INCLUDE_BACKGROUND} 的值（0x01000000）。
