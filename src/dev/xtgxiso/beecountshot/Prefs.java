@@ -13,6 +13,7 @@ public final class Prefs {
     private static final String KEY_PRECISE = "precise_partial";
     private static final String KEY_HOST_PKG = "host_pkg";
     private static final String KEY_KEEP_ALIVE = "keep_alive";
+    private static final String KEY_RAW_SWAP = "raw_swap";
     private static final String KEY_NOTIF_ASKED = "notif_asked";
 
     // ---------------------------------------------------------------- 关于「等待时长」
@@ -90,6 +91,31 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putBoolean(KEY_NOTIF_ASKED, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * screencap raw 的通道顺序校准结果。
+     *
+     * <p>raw 出的是 RGBA，而 Bitmap 的 ARGB_8888 在内存里是 BGRA；
+     * 顺序**因 ROM 而异**。所以不猜——由验证页两种都试、用像素差值选出对的，记在这里。
+     *
+     * @return -1 = 还没校准过（**这种情况生产链路不切 raw**）；0 = 不交换；1 = 交换 R/B
+     */
+    static int rawSwap(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getInt(KEY_RAW_SWAP, -1);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    static void setRawSwap(Context c, int v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putInt(KEY_RAW_SWAP, v).apply();
         } catch (Throwable ignored) {
         }
     }
