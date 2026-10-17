@@ -305,6 +305,7 @@ public class ShotTileService extends TileService {
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
                         String via = "none";
+                        String shotPath = null;
 
                         // ---- 主路径：root 直接抓帧（v2.28 真机验证通过）----
                         //
@@ -318,6 +319,7 @@ public class ShotTileService extends TileService {
                             if (p != null) {
                                 sent = true;
                                 via = "screencap";
+                                shotPath = p;
                                 Logx.i("[tile] 截图路径=screencap 成功（"
                                         + (System.currentTimeMillis() - sc0) + "ms）");
                             } else {
@@ -354,6 +356,43 @@ public class ShotTileService extends TileService {
                             ShotToast.ok(app);
                         } else {
                             ShotToast.fail(app, "三条路都没成功");
+                        }
+
+                        // ---- 兜底：观察者没反应就主动推 ----
+                        //
+                        // 蜜蜂记账的截图观察者会在界面销毁时被注销，那之后它永远发现不了新截图。
+                        // 但 Dart 侧的识别入口还在（引擎保活）——所以 2 秒后确认一下：
+                        // 宿主有没有"认领"这张图（认领 = 观察者在线、消息已经进去了）；
+                        // 没认领就由我们代替观察者，把这条消息推进去。
+                        //
+                        // 只在"没认领"时推，是为了避免同一张图被上报两次、记两笔账。
+                        if (sent && shotPath != null) {
+                            final String pushPath = shotPath;
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        Thread.sleep(2000L);
+                                    } catch (InterruptedException ignored) {
+                                    }
+                                    ShotBridge.Answer a = ShotBridge.query(app, pushPath, 2500L);
+                                    if (a.received && a.processed) {
+                                        Logx.i("[push] 宿主已认领这张图（观察者在线），不推");
+                                        return;
+                                    }
+                                    Logx.w("[push] 宿主没认领（观察者多半失效）-> 主动推一条");
+                                    try {
+                                        Intent p = new Intent(Const.ACTION_PUSH);
+                                        p.setPackage(HostInfo.pkg());
+                                        p.putExtra(Const.EXTRA_PUSH_PATH, pushPath);
+                                        p.addFlags(Intent.FLAG_RECEIVER_FOREGROUND
+                                                | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
+                                        app.sendBroadcast(p);
+                                    } catch (Throwable t) {
+                                        Logx.e("[push] 发推送请求失败", t);
+                                    }
+                                }
+                            }, "bee-push-check").start();
                         }
 
                         // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
