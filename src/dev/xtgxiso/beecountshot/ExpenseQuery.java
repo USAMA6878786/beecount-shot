@@ -194,7 +194,8 @@ final class ExpenseQuery {
                 long max = c.getLong(0);
                 return (max > 100000000000L) ? 1000L : 1L;
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logx.w("[expense] 读时间单位失败，退回秒: " + t.getMessage());
         } finally {
             if (c != null) {
                 try {
@@ -213,7 +214,8 @@ final class ExpenseQuery {
             SharedPreferences sp = ctx.getSharedPreferences(
                     "FlutterSharedPreferences", Context.MODE_PRIVATE);
             fromPrefs = sp.getInt("flutter.current_ledger_id", -1);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logx.w("[expense] 读当前账本 id 失败: " + t.getMessage());
         }
         int[] out = new int[]{-1, 1};
         Cursor c = null;
@@ -228,7 +230,8 @@ final class ExpenseQuery {
                     return out;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logx.w("[expense] 按 id 读账本失败: " + t.getMessage());
         } finally {
             if (c != null) {
                 try {
@@ -244,7 +247,8 @@ final class ExpenseQuery {
                 out[0] = c.getInt(0);
                 out[1] = c.isNull(1) ? 1 : c.getInt(1);
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logx.w("[expense] 读默认账本失败: " + t.getMessage());
         } finally {
             if (c != null) {
                 try {
@@ -267,7 +271,8 @@ final class ExpenseQuery {
                     return s;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logx.w("[expense] 读币种失败，退回 CNY: " + t.getMessage());
         } finally {
             if (c != null) {
                 try {
