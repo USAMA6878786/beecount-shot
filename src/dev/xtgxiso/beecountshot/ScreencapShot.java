@@ -52,6 +52,16 @@ final class ScreencapShot {
      * @return 成功时返回媒体库里的**绝对路径**（后续删除/日志要用）；失败返回 null
      */
     static String take(Context c) {
+        // 校准过的通道顺序 → 走 raw+JPEG（实测 234ms vs PNG 403ms）。
+        // 没校准（-1）就老老实实用 PNG —— **不拿没验证过的东西上生产**。
+        if (Prefs.rawSwap(c) >= 0) {
+            String p = RawShot.take(c);
+            if (p != null) {
+                Logx.i("[screencap] raw+JPEG -> " + RootShell.baseName(p));
+                return p;
+            }
+            Logx.w("[screencap] raw 失败，本次退回 PNG");
+        }
         File tmp = new File(c.getCacheDir(), "prod_shot.png");
         //noinspection ResultOfMethodCallIgnored
         tmp.delete();
@@ -82,15 +92,38 @@ final class ScreencapShot {
     }
 
     /** 把抓到的 png 作为"一张截图"写进 DCIM/Screenshots，并返回它在媒体库里的路径。 */
+    /** 把一张 Bitmap 压成 JPEG 写进相册（raw 提速路径用）。 */
+    static String insertJpeg(Context c, android.graphics.Bitmap bmp) {
+        File jpg = new File(c.getCacheDir(), "prod_shot.jpg");
+        try {
+            java.io.FileOutputStream os = new java.io.FileOutputStream(jpg);
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, os);
+            os.close();
+            String name = "Screenshot_" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+                    .format(new Date()) + "_beecountshot.jpg";
+            return insert(c, jpg, name, "image/jpeg");
+        } catch (Throwable t) {
+            Logx.e("[screencap] 写 JPEG 失败", t);
+            return null;
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            jpg.delete();
+        }
+    }
+
     private static String insertIntoGallery(Context c, File png) {
         String name = "Screenshot_" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
                 .format(new Date()) + "_beecountshot.png";
+        return insert(c, png, name, "image/png");
+    }
+
+    private static String insert(Context c, File png, String name, String mime) {
         ContentResolver cr = c.getContentResolver();
         Uri uri = null;
         try {
             ContentValues v = new ContentValues();
             v.put(MediaStore.Images.Media.DISPLAY_NAME, name);
-            v.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+            v.put(MediaStore.Images.Media.MIME_TYPE, mime);
             v.put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/Screenshots");
             v.put(MediaStore.Images.Media.IS_PENDING, 1);
             uri = cr.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
