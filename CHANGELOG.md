@@ -1,5 +1,39 @@
 # 更新日志
 
+## v2.34
+
+**修 push 失败的真因：推给了一个已经死掉的引擎**
+
+### 日志证据
+
+```
+[push] 宿主没认领（观察者多半失效）-> 主动推一条
+[push] 收到推送请求: .../Screenshot_20261017-124029_beecountshot.png
+[arm] pass consumed (+15789ms), live=0
+[gate-channel] ALLOWED a screenshot report -> BeeCount will book it
+[push] pushed onScreenshotDetected: Screenshot_20261017-124029_beecountshot.png
+```
+
+**消息发出去了、也过了闸门**，但此后 60 秒里宿主日志长度（`applog_len`）
+一直停在 196548 —— **Dart 侧一个字都没写，识别确实没跑**。
+
+### 原因
+
+`messenger` 是**很早以前**（某次截图被正常上报时）抓下来的，而 `FlutterEngine`
+会随 Activity 重建而**更换**。于是 v2.33 是把消息推给了一个**已经销毁的引擎** ——
+不报错、静默丢弃。
+
+### 改了两处
+
+1. **每次都刷新 `messenger`**（不再"抓到一次就永久缓存"）。引擎换了就跟着换。
+2. **要 Dart 回执**：改用带 `MethodChannel.Result` 回调的 `invokeMethod`，
+   并把三种结果都记下来：
+   - `[push] Dart 已接收（success）` —— 收到了
+   - `[push] Dart 侧没有处理这个通道（notImplemented）` —— **引擎活着但没人接**（isolate 不认这个通道）
+   - `[push] Dart 处理出错：xxx`
+
+**下一步就看这三行里的哪一行出现**，能直接定位还剩什么。
+
 ## v2.33
 
 **第二步：观察者失效就由我们替它"喊一声"——现在可以清后台了**
