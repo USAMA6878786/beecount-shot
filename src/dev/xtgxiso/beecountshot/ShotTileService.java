@@ -302,7 +302,28 @@ public class ShotTileService extends TileService {
                         //
                         // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
                         boolean sent = false;
-                        if (a11yReady) {
+                        String via = "none";
+
+                        // ---- 主路径：root 直接抓帧（v2.28 真机验证通过）----
+                        //
+                        // 不走按键注入（按键会被收起中的控制中心吃掉）、
+                        // 也不走无障碍（服务会掉线）——抓完自己往相册插一条截图，
+                        // 蜜蜂记账的观察者照常收到通知。
+                        // 任何一步失败都返回 null，自动退回下面两条老路。
+                        if (ScreencapShot.isAvailable(app)) {
+                            long sc0 = System.currentTimeMillis();
+                            String p = ScreencapShot.take(app);
+                            if (p != null) {
+                                sent = true;
+                                via = "screencap";
+                                Logx.i("[tile] 截图路径=screencap 成功（"
+                                        + (System.currentTimeMillis() - sc0) + "ms）");
+                            } else {
+                                Logx.w("[tile] screencap 失败 -> 退回原链路");
+                            }
+                        }
+
+                        if (!sent && a11yReady) {
                             boolean accepted = ShotAccessibilityService.shootNow();
                             long w0 = System.currentTimeMillis();
                             boolean landed = accepted && RootShell.waitForNewShot(1500L, mark);
@@ -320,7 +341,11 @@ public class ShotTileService extends TileService {
                         }
                         if (!sent) {
                             sent = RootShell.takeScreenshotViaRoot();
+                            if (sent) {
+                                via = "root-input";
+                            }
                         }
+                        Logx.i("[tile] 截图结果：路径=" + via + " 成功=" + sent);
 
                         // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
                         //
