@@ -15,25 +15,57 @@ import java.nio.IntBuffer;
  * `screencap` 的**原始像素**路线：比 PNG 快得多。
  *
  * <h3>为什么要做</h3>
- * 现在用 {@code screencap -p} 直接出 PNG。真机实测抓帧耗时**跟画面复杂度强相关**：
- * 3.2MB 的图要 **902ms**，243KB 的图只要 402ms —— 瓶颈是 PNG 的 DEFLATE 编码。
+ * 真机实测（1080x2400）：PNG 抓帧 **403ms / 427KB**；
+ * raw 抓帧 **202ms / 10125KB**，自己压 JPEG **32ms / 230KB** —— **合计 234ms**。
+ * PNG 的时间全耗在 DEFLATE 编码上，而且**跟画面复杂度强相关**（3.2MB 的图要 902ms）。
  *
- * <p>而 {@code screencap} 不加 {@code -p} 出的是**原始 RGBA 像素**（约 50~100ms），
- * 自己压成 JPEG 大概再花 100~200ms，总耗时有望压到 **0.3s 量级**。
+ * <h3>通道顺序：不猜，校准</h3>
+ * raw 出的是 RGBA，而 {@code Bitmap} 的 {@code ARGB_8888} 在内存里是 BGRA。
+ * 这两种顺序**在不同 ROM 上不一样** —— 第一次按"交换 R/B"写，真机采样比对
+ * **9 点中 6 点超容差、最大差 41**，说明猜错了。
  *
- * <h3>风险（必须先验证）</h3>
- * 原始像素的字节序是 RGBA，而 {@link Bitmap} 的 {@code ARGB_8888} 在内存里是 BGRA。
- * 不同 ROM 上这个顺序是否一致**没有保证** —— 猜错就是**红蓝互换**。
- * 所以这里同时提供一个**自动颜色比对**：同一帧分别用 PNG 和 raw 出图，
- * 采样若干像素比较 RGB，差值在容差内才算通过。**不靠肉眼判断。**
+ * <p>所以现在改成**两种都试、用像素差值选对的**，结果记进 {@link Prefs#rawSwap}。
+ * 没校准过（-1）时生产链路**继续用 PNG** —— 不拿没验证过的东西上生产。
  */
 final class RawShot {
 
     /** 颜色比对允许的单通道误差（PNG 与 JPEG 有损，90 质量下一般 <10）。 */
     private static final int COLOR_TOLERANCE = 24;
 
+    /** 抓一帧，raw → JPEG，写进相册。只在通道顺序已校准后由 {@link ScreencapShot#take} 调用。 */
+    static String take(Context c) {
+        int swap = Prefs.rawSwap(c);
+        if (swap < 0) {
+            return null;
+        }
+        File raw = new File(c.getCacheDir(), "prod_shot.raw");
+        //noinspection ResultOfMethodCallIgnored
+        raw.delete();
+        try {
+            long t0 = System.currentTimeMillis();
+            RootShell.Result r = RootShell.exec(
+                    "screencap " + raw.getAbsolutePath() + " 2>&1", 15000L);
+            long ms = System.currentTimeMillis() - t0;
+            Bitmap bmp = decodeRaw(raw, swap == 1);
+            if (bmp == null) {
+                Logx.w("[raw] 解码失败 exit=" + r.exit + " out=" + RootShell.trim(r.out));
+                return null;
+            }
+            Logx.i("[raw] 抓帧 " + ms + "ms size=" + raw.length() + " swap=" + swap);
+            String p = ScreencapShot.insertJpeg(c, bmp);
+            bmp.recycle();
+            return p;
+        } catch (Throwable t) {
+            Logx.e("[raw] 失败", t);
+            return null;
+        } finally {
+            //noinspection ResultOfMethodCallIgnored
+            raw.delete();
+        }
+    }
+
     /**
-     * 验证：同一帧分别出 PNG 与 raw→JPEG，比较耗时和**采样像素颜色**。
+     * 验证：同一帧出 PNG 与 raw，**两种通道顺序都比一遍**，用数字选出对的并记住。
      *
      * @return 人读的报告
      */
@@ -57,59 +89,90 @@ final class RawShot {
         long rawSize = rawF.length();
 
         Bitmap png = BitmapFactory.decodeFile(pngF.getAbsolutePath());
-        Bitmap rawBmp = decodeRaw(rawF);
-        sb.append("PNG   ：").append(pngMs).append("ms，").append(pngSize / 1024).append(" KB");
+        sb.append("PNG  ：").append(pngMs).append("ms，").append(pngSize / 1024).append(" KB\n");
+        sb.append("raw  ：").append(rawMs).append("ms，").append(rawSize / 1024).append(" KB\n");
         if (png == null) {
-            sb.append("  ✗ 解码失败");
+            sb.append("\n✗ PNG 解码失败，无法比对");
+            return sb.toString();
         }
-        sb.append("\n");
-        sb.append("raw   ：").append(rawMs).append("ms，").append(rawSize / 1024).append(" KB");
-        if (rawBmp == null) {
-            sb.append("  ✗ 解码失败");
-        }
-        sb.append("\n");
 
-        if (png != null && rawBmp != null) {
-            // raw 再压一次 JPEG，看总共要多久
+        int[] scoreNo = new int[]{-1, -1};
+        int[] scoreYes = new int[]{-1, -1};
+        long encMs = 0L;
+        long encSize = 0L;
+
+        Bitmap b0 = decodeRaw(rawF, false);
+        if (b0 != null) {
+            scoreNo = scoreColors(png, b0);
             long t1 = System.currentTimeMillis();
             try {
                 File jpg = new File(c.getCacheDir(), "probe.jpg");
                 FileOutputStream os = new FileOutputStream(jpg);
-                rawBmp.compress(Bitmap.CompressFormat.JPEG, 90, os);
+                b0.compress(Bitmap.CompressFormat.JPEG, 90, os);
                 os.close();
-                sb.append("raw→JPEG 编码：").append(System.currentTimeMillis() - t1)
-                        .append("ms，").append(jpg.length() / 1024).append(" KB\n");
-                sb.append("raw 总耗时（抓帧+编码）：").append(rawMs + (System.currentTimeMillis() - t1))
-                        .append("ms\n");
+                encMs = System.currentTimeMillis() - t1;
+                encSize = jpg.length();
                 //noinspection ResultOfMethodCallIgnored
                 jpg.delete();
             } catch (Throwable t) {
-                sb.append("JPEG 编码失败：").append(t.getMessage()).append("\n");
+                Logx.w("[raw] jpeg 编码失败：" + t.getMessage());
             }
-            sb.append("\n").append(checkColors(png, rawBmp)).append("\n");
+            b0.recycle();
+        }
+        Bitmap b1 = decodeRaw(rawF, true);
+        if (b1 != null) {
+            scoreYes = scoreColors(png, b1);
+            b1.recycle();
         }
 
+        sb.append("raw→JPEG 编码：").append(encMs).append("ms，").append(encSize / 1024).append(" KB\n");
+        sb.append("raw 总耗时：").append(rawMs + encMs).append("ms\n\n");
+        sb.append("颜色比对（两种通道顺序都试）：\n");
+        sb.append("  不交换：").append(scoreText(scoreNo)).append("\n");
+        sb.append("  交换RB：").append(scoreText(scoreYes)).append("\n\n");
+
+        boolean ok0 = scoreNo[0] == 0 && scoreNo[1] >= 0;
+        boolean ok1 = scoreYes[0] == 0 && scoreYes[1] >= 0;
+        if (!ok0 && !ok1) {
+            Prefs.setRawSwap(c, -1);
+            sb.append("✗ 两种顺序都不通过 —— 这条不切，生产继续用 PNG。");
+        } else {
+            int pick = (ok1 && (!ok0 || scoreYes[1] < scoreNo[1])) ? 1 : 0;
+            Prefs.setRawSwap(c, pick);
+            int gain = pngMs > 0 ? (int) (100 - (rawMs + encMs) * 100 / pngMs) : 0;
+            sb.append("✓ 通过，采用「").append(pick == 1 ? "交换RB" : "不交换").append("」。\n")
+                    .append("下次点磁贴就走 raw+JPEG，比 PNG 快约 ").append(gain).append("%。\n")
+                    .append("以后若觉得颜色不对，重跑一次这个按钮即可重新校准。");
+        }
+
+        sb.append("\n\n尺寸：PNG ").append(png.getWidth()).append("x").append(png.getHeight());
         //noinspection ResultOfMethodCallIgnored
         rawF.delete();
         //noinspection ResultOfMethodCallIgnored
         pngF.delete();
-        sb.append("\nPNG 尺寸 ").append(png == null ? "?" : png.getWidth() + "x" + png.getHeight())
-                .append("，raw 尺寸 ")
-                .append(rawBmp == null ? "?" : rawBmp.getWidth() + "x" + rawBmp.getHeight());
         Logx.i("[raw] compare: " + sb.toString().replace('\n', ' '));
         return sb.toString();
     }
 
-    /** 采样比对两张图的 RGB。差值超容差就判红蓝通道可能互换。 */
-    private static String checkColors(Bitmap a, Bitmap b) {
+    private static String scoreText(int[] s) {
+        if (s[1] < 0) {
+            return "✗ 解码失败";
+        }
+        if (s[0] == 0) {
+            return "✓ 通过（最大差 " + s[1] + "）";
+        }
+        return "✗ " + s[0] + "/9 点超容差（最大差 " + s[1] + "）";
+    }
+
+    /** @return {超容差点数, 最大单通道差} */
+    private static int[] scoreColors(Bitmap a, Bitmap b) {
         if (a.getWidth() != b.getWidth() || a.getHeight() != b.getHeight()) {
-            return "③ 颜色比对：✗ 尺寸不一致，无法比对";
+            return new int[]{9, 255};
         }
         int w = a.getWidth();
         int h = a.getHeight();
         int bad = 0;
         int max = 0;
-        int n = 0;
         int[][] pts = new int[][]{
                 {w / 6, h / 6}, {w / 2, h / 6}, {w * 5 / 6, h / 6},
                 {w / 6, h / 2}, {w / 2, h / 2}, {w * 5 / 6, h / 2},
@@ -123,29 +186,19 @@ final class RawShot {
             int db = Math.abs((ca & 0xFF) - (cb & 0xFF));
             int d = Math.max(dr, Math.max(dg, db));
             max = Math.max(max, d);
-            n++;
             if (d > COLOR_TOLERANCE) {
                 bad++;
             }
         }
-        Logx.i("[raw] color samples=" + n + " bad=" + bad + " maxDiff=" + max);
-        if (bad == 0) {
-            return "③ 颜色比对：✓ 通过（采样 " + n + " 点，最大单通道差 " + max
-                    + "，容差 " + COLOR_TOLERANCE + "）";
-        }
-        return "③ 颜色比对：✗ 不通过（采样 " + n + " 点，其中 " + bad
-                + " 点超出容差，最大差 " + max
-                + "）—— 很可能是 RGBA/BGRA 通道顺序不同，这条不能切";
+        return new int[]{bad, max};
     }
 
     /**
      * 解 raw：头 16 字节 = width, height, format, colorspace（小端 uint32），后面是像素。
      *
-     * <p>像素是 RGBA，而 {@code ARGB_8888} 的 int 是 0xAARRGGBB。这里用
-     * {@link ByteOrder#nativeOrder()} 读成 int 后再把 R/B 换回来（一次位运算，
-     * 比逐字节拼快得多）。
+     * @param swap true = 交换 R/B（有些 ROM 的 raw 内存序已经是 BGRA，不用换）
      */
-    private static Bitmap decodeRaw(File f) {
+    private static Bitmap decodeRaw(File f, boolean swap) {
         FileInputStream in = null;
         try {
             long len = f.length();
@@ -171,7 +224,6 @@ final class RawShot {
                 Logx.w("[raw] 长度不足：需要 " + need + " 实际 " + len);
                 return null;
             }
-            int[] pixels = new int[w * h];
             byte[] buf = new byte[w * h * 4];
             int off = 0;
             while (off < buf.length) {
@@ -181,18 +233,21 @@ final class RawShot {
                 }
                 off += r;
             }
+            int[] pixels = new int[w * h];
             IntBuffer ib = ByteBuffer.wrap(buf).order(ByteOrder.nativeOrder()).asIntBuffer();
             ib.get(pixels);
-            // RGBA(内存序) -> ARGB：把 R 和 B 换回来
-            for (int i = 0; i < pixels.length; i++) {
-                int v = pixels[i];
-                pixels[i] = (v & 0xFF00FF00)
-                        | ((v & 0x00FF0000) >>> 16)
-                        | ((v & 0x000000FF) << 16);
+            buf = null;
+            if (swap) {
+                for (int i = 0; i < pixels.length; i++) {
+                    int v = pixels[i];
+                    pixels[i] = (v & 0xFF00FF00)
+                            | ((v & 0x00FF0000) >>> 16)
+                            | ((v & 0x000000FF) << 16);
+                }
             }
             Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             bmp.setPixels(pixels, 0, w, 0, 0, w, h);
-            Logx.i("[raw] 解码 " + w + "x" + h + " fmt=" + fmt);
+            Logx.i("[raw] 解码 " + w + "x" + h + " fmt=" + fmt + " swap=" + swap);
             return bmp;
         } catch (Throwable t) {
             Logx.e("[raw] decodeRaw 异常", t);
