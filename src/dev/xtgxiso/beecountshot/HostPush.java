@@ -39,6 +39,23 @@ final class HostPush {
         return messenger != null;
     }
 
+    /**
+     * 直接收下一个 messenger（来自 {@code MethodChannel} 构造函数的 hook）。
+     *
+     * <p>比 {@link #captureFrom} 更早：只要蜜蜂记账**创建**了那个截图通道就能拿到，
+     * 不必先等它成功上报一次截图。
+     */
+    static void stash(Object m) {
+        if (m == null) {
+            return;
+        }
+        boolean changed = (m != messenger);
+        messenger = m;
+        if (changed) {
+            Logx.i("[push] messenger 已就位（来自通道构造）");
+        }
+    }
+
     /** 从拦到的 MethodChannel 实例上取出 BinaryMessenger（字段名可能不同，按类型找）。 */
     static void captureFrom(Object methodChannel) {
         if (methodChannel == null) {
