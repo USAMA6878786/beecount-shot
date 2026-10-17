@@ -180,6 +180,9 @@ final class ShotCleaner {
                     sweptByTime++;
                 }
             }
+            if (swept > 0) {
+                ShotNotify.done(ctx, "截图已删", "共 " + swept + " 张（没等到识别结果，按时间窗认领）");
+            }
             Logx.i("[clean] 超时结束（" + MAX_WAIT_MS + "ms）：宿主确认 " + confirmed.size()
                     + " 张、时间窗认领 " + mine.size() + " 张，共补删 " + swept
                     + " 张（其中按时间认领 " + sweptByTime + " 张），其余保留");
@@ -199,8 +202,9 @@ final class ShotCleaner {
         }
         Logx.i("[clean] 宿主判定可删（来自 " + from + "）：" + a.path);
 
-        if (a.deleted) {
-            Logx.i("[clean] 宿主已自行删除，无需重复处理");
+            if (a.deleted) {
+                Logx.i("[clean] 宿主已自行删除，无需重复处理");
+                ShotNotify.done(ctx, "识别完成 · 截图已删", RootShell.baseName(a.path));
             if (a.path != null && a.path.length() > 8) {
                 purgeGallery(ctx, a.path);
             }
@@ -226,7 +230,9 @@ final class ShotCleaner {
         }
         purgeGallery(ctx, path);
         Logx.i("[clean] screenshot deleted and gallery entry dropped");
-        toast(ctx, "已记账，截图已自动删除");
+        // 用通知而不是 Toast：后台 Toast 在 Android 12+ 会被系统悄悄丢掉，
+        // 用户看不到就等于没有反馈。
+        ShotNotify.done(ctx, "识别完成 · 截图已删", RootShell.baseName(path));
     }
 
     /** 文件被 rm 之后，让 MediaStore 把那张图从相册里去掉。 */
