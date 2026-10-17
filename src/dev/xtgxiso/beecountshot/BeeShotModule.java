@@ -190,6 +190,10 @@ public class BeeShotModule extends XposedModule {
                     return chain.proceed();
                 }
                 String path = String.valueOf(chain.getArg(1));
+                // 顺手把截图通道的 messenger 抓下来：观察者失效之后要靠它主动推消息。
+                // 这里拦到的这次调用本身就是 invokeMethod("onScreenshotDetected", ...)，
+                // 所以 chain.getThisObject() 正是那个截图通道实例。
+                HostPush.captureFrom(chain.getThisObject());
                 if (!ArmSignal.consume(path)) {
                     HostTelemetry.bump("channel_blocked");
                     Logx.i("[gate-channel] BLOCKED a screenshot report (no pass / duplicate)");
