@@ -165,6 +165,26 @@ public class SettingsActivity extends Activity {
         // 跟控制中心面板收没收干净没有关系——那段等待是配合老路径的，没有存在理由了。
         // 「收起面板」这个动作本身**保留**（不收的话控制面板会出现在截图里）。
 
+        // ---------------- 交给蜜蜂记账自己识别 ----------------
+        heading(root, "识别方式");
+        body(root, "**默认**：截完图后让蜜蜂记账自己去相册里发现它（快，但它界面被回收时会失灵）。\n\n"
+                + "**打开下面这个开关**：截完图后用「系统分享」把图交给蜜蜂记账，"
+                + "由它**自己启动、自己识别、自己落库**。\n\n"
+                + "好处是**完全不碰它的数据库**——分类、账户、币种、去重、标签全由它自己做，"
+                + "它升级也不会把我们写崩。\n\n"
+                + "代价：**会把蜜蜂记账带到前台，闪一下（约 2~4 秒）**。");
+        CheckBox share = new CheckBox(this);
+        share.setText("用系统分享交给蜜蜂记账识别（会闪一下界面）");
+        share.setChecked(Prefs.shareToHost(this));
+        share.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                Prefs.setShareToHost(SettingsActivity.this, isChecked);
+                Logx.i("[settings] share-to-host set to " + isChecked);
+            }
+        });
+        root.addView(share);
+
         // ---------------- 截图确认提速 ----------------
         heading(root, "截图确认提速");
         body(root, "打开后模块会**自己监听相册**，用来判断「刚才那张截图存好了没有」，"
