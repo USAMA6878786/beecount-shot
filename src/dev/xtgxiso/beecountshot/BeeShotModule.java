@@ -116,6 +116,7 @@ public class BeeShotModule extends XposedModule {
             installApplicationContextHook(cl, param);
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
+            installEngineKeepAlive(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -369,6 +370,49 @@ public class BeeShotModule extends XposedModule {
      * 的界面早已被系统回收）。所以这里把 onDestroy 也记一笔，日志里就能直接看出来
      * 失败的那一次，宿主的监听到底还在不在。
      */
+    /**
+     * 让 Flutter 引擎跟界面解耦（"引擎保活"）。
+     *
+     * <h3>要解决什么</h3>
+     * 蜜蜂记账的截图监听器是 Dart 侧注册的，而它的 FlutterEngine 默认
+     * **跟着 MainActivity 一起销毁**（{@code FlutterActivity.shouldDestroyEngineWithHost()}
+     * 默认返回 true）。于是主界面被系统回收之后：观察者被注销、Dart isolate 也没了——
+     * 从这一刻起蜜蜂记账**彻底感知不到任何截图**，不管我们放行不放行。
+     *
+     * <h3>怎么做</h3>
+     * 把这个方法改成返回 false：界面销毁时**引擎和 Dart isolate 都保留**，
+     * 观察者和识别逻辑继续在后台工作。这样"必须先打开一次蜜蜂记账"这个前提就没有了。
+     *
+     * <h3>代价</h3>
+     * 宿主进程会常驻一份 Dart 堆（百 MB 量级），直到进程被杀。
+     * 所以它要跟"常驻前台服务"配合：服务保进程，这个保引擎。
+     */
+    private void installEngineKeepAlive(ClassLoader cl) {
+        Method target = null;
+        try {
+            Class<?> flutterActivity = Class.forName(
+                    "io.flutter.embedding.android.FlutterActivity", false, cl);
+            target = findMethod(flutterActivity, "shouldDestroyEngineWithHost", new Class<?>[0]);
+        } catch (Throwable t) {
+            Logx.e("[hook] FlutterActivity lookup failed", t);
+        }
+        if (target == null) {
+            Logx.w("[hook] shouldDestroyEngineWithHost not found (Flutter 版本不同？)");
+        }
+        add("host-engine-keepalive", target, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object original = chain.proceed();
+                if (Boolean.TRUE.equals(original)) {
+                    HostState.onEngineKeptAlive();
+                    Logx.i("[hook] engine kept alive (shouldDestroyEngineWithHost -> false)");
+                    return Boolean.FALSE;
+                }
+                return original;
+            }
+        });
+    }
+
     private void installActivityLifecycleProbe(ClassLoader cl) {
         Method onDestroy = null;
         try {
@@ -383,7 +427,9 @@ public class BeeShotModule extends XposedModule {
                 // 注意：这是在原始 onDestroy 之前。宿主即将注销它的截图监听器，
                 // 从这一刻起任何截图它都不会再感知到。
                 HostState.onActivityDestroyed();
-                Logx.w("[host] MainActivity.onDestroy -> BeeCount will stop its screenshot monitoring");
+                // 注意：装了"引擎保活"之后，界面销毁**不等于**监听失效——
+                // Dart isolate 还在，观察者继续工作。所以这行只说明"界面没了"，不再断言监听掉了。
+                Logx.w("[host] MainActivity.onDestroy -> 界面销毁（引擎保活生效则监听仍在位）");
                 return chain.proceed();
             }
         });
