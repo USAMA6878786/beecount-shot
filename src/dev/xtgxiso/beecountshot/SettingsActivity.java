@@ -188,6 +188,17 @@ public class SettingsActivity extends Activity {
             ShotWatcher.ensureRegistered(this);
         }
 
+        button(root, "验证 raw+JPEG 提速（颜色自检）", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                runRawCompare();
+            }
+        });
+        body(root, "**这是纯测量，不改任何现有逻辑。** 同一帧分别用 PNG 和 raw→JPEG 各出一次，"
+                + "报告两者耗时，并**采样 9 个点的像素颜色做自动比对**——"
+                + "因为 raw 的通道顺序（RGBA/BGRA）在不同 ROM 上可能不一样，"
+                + "猜错就会红蓝互换。**颜色比对不通过，这条就不切。**");
+
         button(root, "验证 screencap 截图链路（试验）", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -698,6 +709,34 @@ public class SettingsActivity extends Activity {
 
     private void showToast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 跑一次 raw+JPEG 对比（子线程，完成后弹框）。 */
+    private void runRawCompare() {
+        final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
+        pd.setMessage("正在对比 PNG 与 raw→JPEG…");
+        pd.setCancelable(false);
+        pd.show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final String report = RawShot.compare(SettingsActivity.this);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            pd.dismiss();
+                        } catch (Throwable ignored) {
+                        }
+                        new android.app.AlertDialog.Builder(SettingsActivity.this)
+                                .setTitle("raw+JPEG 提速验证")
+                                .setMessage(report)
+                                .setPositiveButton("知道了", null)
+                                .show();
+                    }
+                });
+            }
+        }, "bee-raw-compare").start();
     }
 
     /** 跑一次 screencap 验证（子线程，完成后弹框）。 */
