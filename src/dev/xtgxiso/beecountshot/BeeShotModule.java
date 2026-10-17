@@ -116,10 +116,6 @@ public class BeeShotModule extends XposedModule {
             installApplicationContextHook(cl, param);
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
-            installEngineKeepAlive(cl);
-            installEngineDestroyGuard(cl);
-            installChannelCapture(cl);
-            installExecutorCapture(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -193,10 +189,6 @@ public class BeeShotModule extends XposedModule {
                     return chain.proceed();
                 }
                 String path = String.valueOf(chain.getArg(1));
-                // 顺手把截图通道的 messenger 抓下来：观察者失效之后要靠它主动推消息。
-                // 这里拦到的这次调用本身就是 invokeMethod("onScreenshotDetected", ...)，
-                // 所以 chain.getThisObject() 正是那个截图通道实例。
-                HostPush.captureFrom(chain.getThisObject());
                 if (!ArmSignal.consume(path)) {
                     HostTelemetry.bump("channel_blocked");
                     Logx.i("[gate-channel] BLOCKED a screenshot report (no pass / duplicate)");
@@ -377,180 +369,7 @@ public class BeeShotModule extends XposedModule {
      * 的界面早已被系统回收）。所以这里把 onDestroy 也记一笔，日志里就能直接看出来
      * 失败的那一次，宿主的监听到底还在不在。
      */
-    /**
-     * 让 Flutter 引擎跟界面解耦（"引擎保活"）。
-     *
-     * <h3>要解决什么</h3>
-     * 蜜蜂记账的截图监听器是 Dart 侧注册的，而它的 FlutterEngine 默认
-     * **跟着 MainActivity 一起销毁**（{@code FlutterActivity.shouldDestroyEngineWithHost()}
-     * 默认返回 true）。于是主界面被系统回收之后：观察者被注销、Dart isolate 也没了——
-     * 从这一刻起蜜蜂记账**彻底感知不到任何截图**，不管我们放行不放行。
-     *
-     * <h3>怎么做</h3>
-     * 把这个方法改成返回 false：界面销毁时**引擎和 Dart isolate 都保留**，
-     * 观察者和识别逻辑继续在后台工作。这样"必须先打开一次蜜蜂记账"这个前提就没有了。
-     *
-     * <h3>代价</h3>
-     * 宿主进程会常驻一份 Dart 堆（百 MB 量级），直到进程被杀。
-     * 所以它要跟"常驻前台服务"配合：服务保进程，这个保引擎。
-     */
-    private void installEngineKeepAlive(ClassLoader cl) {
-        Method target = null;
-        try {
-            Class<?> flutterActivity = Class.forName(
-                    "io.flutter.embedding.android.FlutterActivity", false, cl);
-            target = findMethod(flutterActivity, "shouldDestroyEngineWithHost", new Class<?>[0]);
-        } catch (Throwable t) {
-            Logx.e("[hook] FlutterActivity lookup failed", t);
-        }
-        if (target == null) {
-            Logx.w("[hook] shouldDestroyEngineWithHost not found (Flutter 版本不同？)");
-        }
-        add("host-engine-keepalive", target, new XposedInterface.Hooker() {
-            @Override
-            public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                Object original = chain.proceed();
-                if (Boolean.TRUE.equals(original)) {
-                    HostState.onEngineKeptAlive();
-                    Logx.i("[hook] engine kept alive (shouldDestroyEngineWithHost -> false)");
-                    return Boolean.FALSE;
-                }
-                return original;
-            }
-        });
-    }
-
-    /**
-     * 拦住引擎销毁（真正收敛的那一刀）。
-     *
-     * <h3>为什么不再只 hook shouldDestroyEngineWithHost</h3>
-     * 真机日志里 {@code engine_kept} 一次都没出现 —— 说明
-     * {@code FlutterActivity.shouldDestroyEngineWithHost()} 那条路**根本没被走到**
-     * （可能被 Flutter 版本改了实现，也可能走了别的分支）。
-     *
-     * <p>而 {@code FlutterEngine.destroy()} 是引擎真正被释放的地方 ——
-     * 不管是哪种路径触发销毁，最后都会落到这里。拦住它才是"引擎保活"的唯一有效位置。
-     *
-     * <h3>代价</h3>
-     * 引擎和 Dart isolate 不再随界面释放，会一直占着内存（百 MB 量级），直到进程结束。
-     * 这是有意的取舍：**进程保活 + 引擎保活**，换来"界面被回收后识别仍可用"。
-     */
-    private void installEngineDestroyGuard(ClassLoader cl) {
-        Method destroy = null;
-        try {
-            Class<?> engine = Class.forName(
-                    "io.flutter.embedding.engine.FlutterEngine", false, cl);
-            destroy = findMethod(engine, "destroy", new Class<?>[0]);
-        } catch (Throwable t) {
-            Logx.e("[hook] FlutterEngine lookup failed", t);
-        }
-        if (destroy == null) {
-            Logx.w("[hook] FlutterEngine.destroy() not found");
-        }
-        add("engine-destroy-guard", destroy, new XposedInterface.Hooker() {
-            @Override
-            public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                HostState.onEngineKeptAlive();
-                Logx.i("[hook] FlutterEngine.destroy() 被拦下 —— 引擎继续存活");
-                return null; // 不 proceed，等于不销毁
-            }
-        });
-    }
-
-    /**
-     * 从 {@code MethodChannel} 的**构造函数**上抓 messenger。
-     *
-     * <h3>为什么要提前到构造这一刻</h3>
-     * 之前是"拦到一次真实截图上报"才顺手抓 messenger —— 但那要求蜜蜂记账的
-     * Activity 起来过、观察者注册过、并且真的截过一张。等于"想用推送，得先成功推送一次"。
-     *
-     * <p>而 {@code MainActivity.configureFlutterEngine} 里**一开始就会创建**截图通道
-     * （原生侧要拿它给 Dart 发消息）。所以在构造时就抓下来，条件宽松得多：
-     * **只要蜜蜂记账启动过就有**。
-     *
-     * <p>（"进程被杀"那种情况仍然救不了——没有 Dart 运行时，推给谁都没用。）
-     */
-    private void installChannelCapture(ClassLoader cl) {
-        Class<?> channelClass = null;
-        try {
-            channelClass = Class.forName("io.flutter.plugin.common.MethodChannel", false, cl);
-        } catch (Throwable t) {
-            Logx.e("[hook] MethodChannel lookup failed", t);
-        }
-        if (channelClass == null) {
-            failedList.add("shot-channel-ctor:not-found");
-            return;
-        }
-        java.lang.reflect.Constructor<?>[] ctors = channelClass.getDeclaredConstructors();
-        int n = 0;
-        for (final java.lang.reflect.Constructor<?> c : ctors) {
-            Class<?>[] ps = c.getParameterTypes();
-            if (ps.length < 2
-                    || !ps[0].getName().contains("BinaryMessenger")
-                    || ps[1] != String.class) {
-                continue;
-            }
-            boolean ok = add("shot-channel-ctor/" + ps.length, c,
-                    new XposedInterface.Hooker() {
-                        @Override
-                        public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                            try {
-                                if (HostPush.CHANNEL.equals(String.valueOf(chain.getArg(1)))) {
-                                    HostPush.stash(chain.getArg(0));
-                                }
-                            } catch (Throwable ignored) {
-                            }
-                            return chain.proceed();
-                        }
-                    });
-            if (ok) {
-                n++;
-            }
-        }
-        Logx.i("[hook] channel ctor hooks: " + n);
-    }
-
-    /**
-     * 直接从引擎上拿 messenger（最终方案）。
-     *
-     * <h3>为什么放弃"按通道名拦构造函数"</h3>
-     * 那个 hook 装上了（`shot-channel-ctor/2/3/4`），但真机上一次都没命中——
-     * 蜜蜂记账创建截图通道时走的不是我们拦的那几个签名。messenger 于是只能靠
-     * "拦到一次真实上报"才拿到，等于"想推送得先成功推送一次"。
-     *
-     * <h3>这次拿什么</h3>
-     * {@code FlutterEngine.getDartExecutor()} 返回的 {@code DartExecutor}
-     * **本身就实现了 {@code BinaryMessenger}} —— 它是所有通道最终共用的那一个。
-     * 既不用管通道什么时候构造，也不用管通道叫什么名字。
-     *
-     * <p>只要蜜蜂记账的引擎起来过（启动过 App），这里就能拿到。
-     * 进程被杀那种情况仍然无解——没有 Dart 运行时。
-     */
-    private void installExecutorCapture(ClassLoader cl) {
-        Method get = null;
-        try {
-            Class<?> engine = Class.forName(
-                    "io.flutter.embedding.engine.FlutterEngine", false, cl);
-            get = findMethod(engine, "getDartExecutor", new Class<?>[0]);
-        } catch (Throwable t) {
-            Logx.e("[hook] FlutterEngine.getDartExecutor lookup failed", t);
-        }
-        if (get == null) {
-            Logx.w("[hook] getDartExecutor not found");
-        }
-        add("shot-executor-capture", get, new XposedInterface.Hooker() {
-            @Override
-            public Object intercept(XposedInterface.Chain chain) throws Throwable {
-                Object executor = chain.proceed();
-                if (executor != null) {
-                    HostPush.stash(executor);
-                }
-                return executor;
-            }
-        });
-    }
-
-    private void installActivityLifecycleProbe(ClassLoader cl) {
+                    private void installActivityLifecycleProbe(ClassLoader cl) {
         Method onDestroy = null;
         try {
             Class<?> activity = Class.forName(Const.HOST_PKG + ".MainActivity", false, cl);
