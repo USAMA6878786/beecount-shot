@@ -1,5 +1,45 @@
 # 更新日志
 
+## v2.36
+
+**换 hook 位置：直接拦 `FlutterEngine.destroy()`**
+
+### 为什么换
+
+上一版拦的是 `FlutterActivity.shouldDestroyEngineWithHost()`，但真机日志里
+`engine_kept` **一次都没出现** —— 说明这条分支根本没被走到（Flutter 版本的实现路径不同）。
+hook 装了等于没装。
+
+### 这次拦在哪
+
+`io.flutter.embedding.engine.FlutterEngine.destroy()` —— **引擎真正被释放的唯一收敛点**。
+不管哪条路径触发销毁，最后都会落到这里。
+
+```java
+add("engine-destroy-guard", destroy, chain -> {
+    HostState.onEngineKeptAlive();
+    Logx.i("[hook] FlutterEngine.destroy() 被拦下 —— 引擎继续存活");
+    return null;   // 不 proceed = 不销毁
+});
+```
+
+原来的 `shouldDestroyEngineWithHost` hook 保留（万一某些版本走那条路，两道都拦）。
+
+### 验证点（这次一定能看到）
+
+日志里应出现：
+
+```
+[hook] FlutterEngine.destroy() 被拦下 —— 引擎继续存活
+```
+
+以及遥测里多出 `engine_kept=1`。**这两个出现了，才说明引擎真的没死。**
+
+### 代价
+
+引擎和 Dart isolate 不再随界面释放，会一直占内存（百 MB 量级），直到进程结束。
+这是有意取舍：**进程保活 + 引擎保活**，换"界面被回收后识别仍可用"。
+
 ## v2.35
 
 **修掉一个存在好几个版本的误报：删成功了却提示"截图删除可能失败"**
