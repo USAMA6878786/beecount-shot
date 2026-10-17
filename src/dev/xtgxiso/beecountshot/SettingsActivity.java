@@ -97,6 +97,14 @@ public class SettingsActivity extends Activity {
         // 它的"允许通知"总开关是灰的、点不动——用户会以为是模块坏了。
         KeepAliveService.ensureChannel(this);
 
+        // 后台 Toast 需要悬浮窗权限——打开设置页时顺手授一次（子线程，要开 root shell）。
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ShotToast.ensureOverlayAllowed(SettingsActivity.this);
+            }
+        }, "bee-overlay-grant").start();
+
         // 打开设置页时应用在前台，正是把常驻服务拉起来的合法时机。
         if (Prefs.keepAlive(this)) {
             KeepAliveService.start(this);
