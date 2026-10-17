@@ -153,6 +153,9 @@ public class ShotTileService extends TileService {
      * <p>额外好处：即使磁贴不重新绑定，{@code onStartListening} 里那次对宿主的查询也会跑一遍，
      * 于是"蜜蜂记账截图监听不在位"这类问题会立刻显示在副标题上，而不是等用户点完才发现。
      */
+    /** 连续几次点击都没能用上无障碍。到 3 次提醒用户一次。 */
+    private static volatile int a11yFailStreak = 0;
+
     static void requestRefresh(Context ctx) {
         if (ctx == null) {
             return;
@@ -267,6 +270,14 @@ public class ShotTileService extends TileService {
                         }
                         final boolean a11yReady = ShotAccessibilityService.isReady();
                         Logx.i("[tile] 截屏（收面板后等了 " + Const.SHOT_SETTLE_MS + "ms）a11y=" + a11yReady);
+
+                        // 连续几次都用不上无障碍 -> 提醒用户去重开。
+                        // （否则用户只知道「有点慢」，不知道是截屏服务掉了。）
+                        if (a11yReady) {
+                            a11yFailStreak = 0;
+                        } else if (++a11yFailStreak == 3) {
+                            KeepAliveService.notifyA11yLost(app);
+                        }
                         final long shotAt = System.currentTimeMillis();
 
                         // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
