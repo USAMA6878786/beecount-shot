@@ -119,6 +119,7 @@ public class BeeShotModule extends XposedModule {
             installEngineKeepAlive(cl);
             installEngineDestroyGuard(cl);
             installChannelCapture(cl);
+            installExecutorCapture(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -507,6 +508,46 @@ public class BeeShotModule extends XposedModule {
             }
         }
         Logx.i("[hook] channel ctor hooks: " + n);
+    }
+
+    /**
+     * 直接从引擎上拿 messenger（最终方案）。
+     *
+     * <h3>为什么放弃"按通道名拦构造函数"</h3>
+     * 那个 hook 装上了（`shot-channel-ctor/2/3/4`），但真机上一次都没命中——
+     * 蜜蜂记账创建截图通道时走的不是我们拦的那几个签名。messenger 于是只能靠
+     * "拦到一次真实上报"才拿到，等于"想推送得先成功推送一次"。
+     *
+     * <h3>这次拿什么</h3>
+     * {@code FlutterEngine.getDartExecutor()} 返回的 {@code DartExecutor}
+     * **本身就实现了 {@code BinaryMessenger}} —— 它是所有通道最终共用的那一个。
+     * 既不用管通道什么时候构造，也不用管通道叫什么名字。
+     *
+     * <p>只要蜜蜂记账的引擎起来过（启动过 App），这里就能拿到。
+     * 进程被杀那种情况仍然无解——没有 Dart 运行时。
+     */
+    private void installExecutorCapture(ClassLoader cl) {
+        Method get = null;
+        try {
+            Class<?> engine = Class.forName(
+                    "io.flutter.embedding.engine.FlutterEngine", false, cl);
+            get = findMethod(engine, "getDartExecutor", new Class<?>[0]);
+        } catch (Throwable t) {
+            Logx.e("[hook] FlutterEngine.getDartExecutor lookup failed", t);
+        }
+        if (get == null) {
+            Logx.w("[hook] getDartExecutor not found");
+        }
+        add("shot-executor-capture", get, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Object executor = chain.proceed();
+                if (executor != null) {
+                    HostPush.stash(executor);
+                }
+                return executor;
+            }
+        });
     }
 
     private void installActivityLifecycleProbe(ClassLoader cl) {
