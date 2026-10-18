@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      设置页主题。
+
+      为什么要自定义：默认的 Theme.DeviceDefault.Light 用系统强调色（蓝紫），
+      而本页整体是暖色调（蜂蜜色）。开关、滑块这些控件直接吃 colorAccent，
+      光在代码里 setTrackTintList 在 Android 12+ 上不生效（Switch 的轨道不吃 tint），
+      所以必须在主题层把强调色换掉。
+
+      windowBackground 设成页面同色，避免滚动回弹时看到白底。
+      状态栏/导航栏跟随页面底色，并声明浅色系统栏图标（深色字形）。
+    -->
+    <style name="BeeCountSettings" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:colorAccent">#8A5100</item>
+        <item name="android:colorControlActivated">#8A5100</item>
+        <item name="android:colorControlHighlight">#338A5100</item>
+        <item name="android:windowBackground">#FFFBFF</item>
+        <item name="android:statusBarColor">#FFFBFF</item>
+        <item name="android:navigationBarColor">#FFFBFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+</resources>
