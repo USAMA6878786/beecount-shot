@@ -1,7 +1,9 @@
 package dev.xtgxiso.beecountshot;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.content.res.ColorStateList;
@@ -44,6 +46,8 @@ final class Ui {
     static final int ON_SURFACE = Color.parseColor("#1D1B16");
     /** 次要文字。 */
     static final int ON_SURFACE_VARIANT = Color.parseColor("#514539");
+    /** 未选中态的描边/轨道。 */
+    static final int OUTLINE_VARIANT = Color.parseColor("#D5C3B2");
     /** 状态色。 */
     static final int OK = Color.parseColor("#1D7A5F");
     static final int WARN = Color.parseColor("#A36A00");
@@ -202,7 +206,7 @@ final class Ui {
      * <p>M3 里这类行**不加卡片内边距以外的东西**——靠留白分组，不画分隔线。
      */
     static void switchRow(Context c, LinearLayout parent, String title, String subtitle,
-                          boolean checked, CompoundButton.OnCheckedChangeListener l) {
+                          boolean checked, OnToggle l) {
         LinearLayout row = row(c);
 
         LinearLayout left = new LinearLayout(c);
@@ -215,15 +219,69 @@ final class Ui {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         row.addView(left, llp);
 
-        Switch sw = new Switch(c);
-        sw.setShowText(false);
-        sw.setChecked(checked);
-        sw.setButtonTintList(null);
-        sw.setOnCheckedChangeListener(l);
+        Toggle sw = new Toggle(c);
+        sw.checked = checked;
+        sw.listener = l;
         row.addView(sw, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         parent.addView(row);
+    }
+
+    /** M3 outlined 按钮：透明底 + 1dp 描边 + 主色字。 */
+    static TextView outlinedButton(Context c, String text, View.OnClickListener l) {
+        TextView b = new TextView(c);
+        b.setText(text);
+        b.setTextSize(14f);
+        b.setTextColor(PRIMARY);
+        b.setGravity(Gravity.CENTER);
+        b.setMinHeight(dp(c, BUTTON_HEIGHT));
+        b.setPadding(dp(c, 20), dp(c, 10), dp(c, 20), dp(c, 10));
+        b.setClickable(true);
+        b.setFocusable(true);
+        b.setIncludeFontPadding(false);
+        GradientDrawable g = rounded(Color.TRANSPARENT, BUTTON_RADIUS, c);
+        g.setStroke(Math.max(1, dp(c, 1)), OUTLINE_VARIANT);
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x1F8A5100), g, null));
+        return b;
+    }
+
+    /**
+     * M3 列表行：左对齐文字 + 右侧箭头，整行可点。
+     *
+     * <p>「帮助」那种成组入口用它——比一串居中文字按钮更像 App，也不会显得零散。
+     */
+    static void listItem(Context c, LinearLayout parent, String title, View.OnClickListener l) {
+        LinearLayout row = new LinearLayout(c);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(c, 48));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x148A5100), null, null));
+
+        TextView t = new TextView(c);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTextColor(ON_SURFACE);
+        row.addView(t, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView chev = new TextView(c);
+        chev.setText("›");
+        chev.setTextSize(18f);
+        chev.setTextColor(ON_SURFACE_VARIANT);
+        row.addView(chev);
+
+        row.setOnClickListener(l);
+        parent.addView(row);
+    }
+
+    /** SeekBar 按 M3 语义色着色。 */
+    static void tintSeekBar(Context c, android.widget.SeekBar sb) {
+        sb.setProgressTintList(ColorStateList.valueOf(PRIMARY));
+        sb.setThumbTintList(ColorStateList.valueOf(PRIMARY));
+        sb.setProgressBackgroundTintList(ColorStateList.valueOf(PRIMARY_CONTAINER));
     }
 
     /** 按钮之间留一点空。 */
@@ -239,6 +297,66 @@ final class Ui {
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
         p.setMargins(l, t, r, b);
         return p;
+    }
+
+
+    /** 开关回调（不用 CompoundButton，因为下面是自己画的）。 */
+    interface OnToggle {
+        void onToggle(boolean on);
+    }
+
+    /**
+     * 自绘的 M3 开关。
+     *
+     * <h3>为什么不用系统 Switch</h3>
+     * 系统 {@code Switch} 在 Android 12+ 的轨道颜色由主题的 {@code switchTrackTint} 决定，
+     * 代码里 {@code setTrackTintList} 实测**不生效**（真机：只有圆点变色，轨道始终浅色）。
+     * 那样"开/关"只靠圆点位置区分，不是 M3 的样子。
+     *
+     * <p>自己画就完全可控：开 = 主色轨道 + 白点靠右；关 = 描边色轨道 + 深色点靠左。
+     */
+    static final class Toggle extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int trackW;
+        private final int trackH;
+        private final int knobD;
+        boolean checked;
+        OnToggle listener;
+
+        Toggle(Context c) {
+            super(c);
+            trackW = dp(c, 52);
+            trackH = dp(c, 32);
+            knobD = dp(c, 24);
+            setClickable(true);
+            setFocusable(true);
+        }
+
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            setMeasuredDimension(trackW, trackH);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            float r = trackH / 2f;
+            paint.setColor(checked ? PRIMARY : OUTLINE_VARIANT);
+            canvas.drawRoundRect(0, 0, trackW, trackH, r, r, paint);
+
+            float cx = checked ? trackW - r : r;
+            paint.setColor(checked ? ON_PRIMARY : Color.parseColor("#FFFFFF"));
+            canvas.drawCircle(cx, trackH / 2f, knobD / 2f, paint);
+        }
+
+        @Override
+        public boolean performClick() {
+            checked = !checked;
+            invalidate();
+            if (listener != null) {
+                listener.onToggle(checked);
+            }
+            return true;
+        }
     }
 
     private Ui() {
