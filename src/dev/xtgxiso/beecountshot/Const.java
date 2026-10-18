@@ -44,6 +44,8 @@ public final class Const {
      * SharedPreferences，所以只能跟着放行广播一起送过去（正好每次截屏前都会发一次）。
      */
     public static final String EXTRA_PRECISE = "precise";
+    /** 放行时一并告诉宿主"要不要删图"，否则它关着开关也照删。 */
+    public static final String EXTRA_AUTO_DELETE = "auto_delete";
 
     /** 模块 App 的包名（宿主回广播时用）。 */
     public static final String MODULE_PKG = "dev.xtgxiso.beecountshot";
