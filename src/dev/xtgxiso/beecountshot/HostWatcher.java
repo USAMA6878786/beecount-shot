@@ -40,6 +40,13 @@ final class HostWatcher {
     private static volatile int pushCount = 0;
     private static volatile int hostDeleteOk = 0;
     private static volatile String lastAction = "<none>";
+    /** 是否允许删图（来自模块设置页的开关，随放行信号传进来）。 */
+    private static volatile boolean autoDelete = true;
+
+    static void setAutoDelete(boolean v) {
+        autoDelete = v;
+    }
+
     private static volatile String deletedPath = "";
     private static volatile long deletedAt = 0L;
 
@@ -119,6 +126,14 @@ final class HostWatcher {
             // 而且用"这个事件时间戳还没被用过"做闸门，所以并发进来也只会结算一次。
             final String[] toDelete = HostVerdict.decide(eventTs, logsJson);
             if (toDelete == null) {
+                return;
+            }
+            if (!autoDelete) {
+                // 用户在设置页把自动删图关掉了：只清队列，文件留着
+                for (int k = 0; k < toDelete.length; k++) {
+                    HostVerdict.clearOne(toDelete[k]);
+                }
+                Logx.i("[watch] auto-delete OFF -> keep " + toDelete.length + " file(s)");
                 return;
             }
             Logx.i("[watch] settled (eventTs=" + eventTs
