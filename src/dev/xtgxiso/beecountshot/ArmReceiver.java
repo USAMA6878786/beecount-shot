@@ -45,6 +45,10 @@ public class ArmReceiver extends BroadcastReceiver {
         boolean precise = true;
         try {
             precise = intent.getBooleanExtra(Const.EXTRA_PRECISE, true);
+            // 设置页的「识别后删除截图」必须传进来 —— 宿主默认会删，
+            // 只挡模块侧的清理线程是挡不住的。
+            boolean autoDelete = intent.getBooleanExtra(Const.EXTRA_AUTO_DELETE, true);
+            HostWatcher.setAutoDelete(autoDelete);
         } catch (Throwable ignored) {
         }
         HostVerdict.setPrecise(precise);
