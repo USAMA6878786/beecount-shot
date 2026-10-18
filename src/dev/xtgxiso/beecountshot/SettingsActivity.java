@@ -77,13 +77,13 @@ public class SettingsActivity extends Activity {
 
         LinearLayout statusActions = new LinearLayout(this);
         statusActions.setOrientation(LinearLayout.HORIZONTAL);
-        TextView bRestart = Ui.tonalButton(this, "重启蜜蜂记账", new View.OnClickListener() {
+        TextView bRestart = Ui.filledButton(this, "重启蜜蜂记账", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 restartHost();
             }
         });
-        TextView bRoot = Ui.textButton(this, "root 权限", new View.OnClickListener() {
+        TextView bRoot = Ui.tonalButton(this, "root 权限", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 requestRoot();
@@ -92,7 +92,10 @@ public class SettingsActivity extends Activity {
         LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         statusActions.addView(bRestart, half);
-        statusActions.addView(bRoot, half);
+        LinearLayout.LayoutParams half2 = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        half2.leftMargin = Ui.dp(this, 8);
+        statusActions.addView(bRoot, half2);
         statusCard.addView(statusActions, Ui.lp(-1, -2, 0, 12, 0, 0));
         // 先渲染一次，避免探测回调到达前状态卡是空白
         refreshStatus();
@@ -123,7 +126,7 @@ public class SettingsActivity extends Activity {
         }, "bee-overlay-grant").start();
 
         // ---------------- 磁贴 ----------------
-        LinearLayout tileCard = Ui.card(this, root, "磁贴");
+        LinearLayout tileCard = Ui.card(this, root, null);
         LinearLayout tileRow = Ui.row(this);
         LinearLayout tileLeft = new LinearLayout(this);
         tileLeft.setOrientation(LinearLayout.VERTICAL);
@@ -147,9 +150,9 @@ public class SettingsActivity extends Activity {
         LinearLayout behaviorCard = Ui.card(this, root, "行为");
 
         Ui.switchRow(this, behaviorCard, "常驻运行", "进程不被回收，点磁贴立刻响应",
-                Prefs.keepAlive(this), new CompoundButton.OnCheckedChangeListener() {
+                Prefs.keepAlive(this), new Ui.OnToggle() {
                     @Override
-                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                    public void onToggle(boolean on) {
                         Prefs.setKeepAlive(SettingsActivity.this, on);
                         Logx.i("[settings] keep-alive set to " + on);
                         if (on) {
@@ -163,18 +166,18 @@ public class SettingsActivity extends Activity {
                 });
 
         Ui.switchRow(this, behaviorCard, "识别后删除截图", "蜜蜂记账读完就清理相册",
-                Prefs.autoDelete(this), new CompoundButton.OnCheckedChangeListener() {
+                Prefs.autoDelete(this), new Ui.OnToggle() {
                     @Override
-                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                    public void onToggle(boolean on) {
                         Prefs.setAutoDelete(SettingsActivity.this, on);
                         Logx.i("[settings] auto-delete set to " + on);
                     }
                 });
 
         Ui.switchRow(this, behaviorCard, "日志读不到时兜底", "按「先截先删」推断，可能误删",
-                Prefs.precisePartial(this), new CompoundButton.OnCheckedChangeListener() {
+                Prefs.precisePartial(this), new Ui.OnToggle() {
                     @Override
-                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                    public void onToggle(boolean on) {
                         Prefs.setPrecisePartial(SettingsActivity.this, on);
                         Logx.i("[settings] precise-partial set to " + on);
                     }
@@ -184,9 +187,9 @@ public class SettingsActivity extends Activity {
         LinearLayout speedCard = Ui.card(this, root, "提速");
         final boolean hasMedia = ShotWatcher.hasPermission(this);
         Ui.switchRow(this, speedCard, "相册监听", hasMedia ? "已生效" : "需要「读取照片」权限",
-                hasMedia, new CompoundButton.OnCheckedChangeListener() {
+                hasMedia, new Ui.OnToggle() {
                     @Override
-                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                    public void onToggle(boolean on) {
                         requestMediaPermissionIfNeeded();
                     }
                 });
@@ -202,7 +205,7 @@ public class SettingsActivity extends Activity {
         });
         speedCard.addView(bColor, Ui.buttonLp(this, false));
 
-        TextView bProbe = Ui.textButton(this, "检查截屏链路", new View.OnClickListener() {
+        TextView bProbe = Ui.outlinedButton(this, "检查截屏链路", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 runScreencapProbe();
@@ -215,6 +218,7 @@ public class SettingsActivity extends Activity {
         final TextView alphaLabel = Ui.rowTitle(this, "背景不透明度  85%");
         widgetCard.addView(alphaLabel);
         SeekBar alphaBar = new SeekBar(this);
+        Ui.tintSeekBar(this, alphaBar);
         alphaBar.setMax(100);
         alphaBar.setProgress(Math.round(WidgetPrefs.defaultAlpha(this) * 100f / 255f));
         alphaLabel.setText("背景不透明度  " + alphaBar.getProgress() + "%");
@@ -241,34 +245,30 @@ public class SettingsActivity extends Activity {
 
         // ---------------- 帮助 ----------------
         LinearLayout helpCard = Ui.card(this, root, "帮助");
-        TextView bGuide = Ui.textButton(this, "使用说明", new View.OnClickListener() {
+        Ui.listItem(this, helpCard, "使用说明", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showText("使用说明", GUIDE);
             }
         });
-        helpCard.addView(bGuide, Ui.buttonLp(this, true));
-        TextView bFaq = Ui.textButton(this, "常见问题", new View.OnClickListener() {
+        Ui.listItem(this, helpCard, "常见问题", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 showText("常见问题", FAQ);
             }
         });
-        helpCard.addView(bFaq, Ui.buttonLp(this, false));
-        TextView bLog = Ui.textButton(this, "导出日志", new View.OnClickListener() {
+        Ui.listItem(this, helpCard, "导出日志", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 exportLogs();
             }
         });
-        helpCard.addView(bLog, Ui.buttonLp(this, false));
-        TextView bDiag = Ui.textButton(this, "跑一次诊断", new View.OnClickListener() {
+        Ui.listItem(this, helpCard, "跑一次诊断", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 runDiagnostics();
             }
         });
-        helpCard.addView(bDiag, Ui.buttonLp(this, false));
 
         // 打开后立刻探一次宿主状态
         probeHost();
