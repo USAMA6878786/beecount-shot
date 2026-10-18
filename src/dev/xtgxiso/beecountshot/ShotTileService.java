@@ -243,7 +243,9 @@ public class ShotTileService extends TileService {
                         RootShell.Result r = RootShell.armAndCollapse(Const.ACTION_ARM, HostInfo.pkg(),
                                 "--el " + Const.EXTRA_UNTIL + " " + until
                                         + " --ez " + Const.EXTRA_PRECISE + " "
-                                        + (Prefs.precisePartial(app) ? "true" : "false"),
+                                        + "true"
+                                        + " --ez " + Const.EXTRA_AUTO_DELETE + " "
+                                        + (Prefs.autoDelete(app) ? "true" : "false"),
                                 Intent.FLAG_RECEIVER_FOREGROUND
                                         | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND, mark);
                         long spent = System.currentTimeMillis() - t0;
@@ -288,7 +290,7 @@ public class ShotTileService extends TileService {
                             new Thread(new Runnable() {
                                 @Override
                                 public void run() {
-                                    ShotCleaner.run(app, shotAt);
+                                    ShotCleaner.submit(app, shotAt);
                                 }
                             }, "bee-shot-cleaner").start();
                         } else {
@@ -450,7 +452,8 @@ public class ShotTileService extends TileService {
             arm.setPackage(HostInfo.pkg());
             arm.putExtra(Const.EXTRA_UNTIL, until);
             // 把设置页那个"推断着删"的开关搭这趟车送进宿主进程（见 Const.EXTRA_PRECISE）。
-            arm.putExtra(Const.EXTRA_PRECISE, Prefs.precisePartial(app));
+            arm.putExtra(Const.EXTRA_PRECISE, true);
+            arm.putExtra(Const.EXTRA_AUTO_DELETE, Prefs.autoDelete(app));
             arm.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
             app.sendBroadcast(arm);
             Logx.i("[tile] arm broadcast sent (backup channel)");
