@@ -37,6 +37,9 @@ public class SettingsActivity extends Activity {
     /** 状态卡第二行：一行冰冷的事实（root / hook / 无障碍 / 监听）。 */
     private TextView statusFacts;
 
+    /** 主动重启宿主的窗口期。这期间状态显示"正在重启"而不是"连不上"。 */
+    private volatile long restartingUntil = 0L;
+
     /** 来自宿主的实时状态（后台查询后刷新）。 */
     private volatile boolean hostAnswered = false;
     private volatile boolean activityAlive = false;
@@ -340,6 +343,16 @@ public class SettingsActivity extends Activity {
                     @Override
                     public void run() {
                         refreshStatus();
+                        // 还在重启窗口里、又没答复 -> 过一会儿自己再来一次，
+                        // 免得用户盯着"正在重启"不动。
+                        if (!hostAnswered && System.currentTimeMillis() < restartingUntil) {
+                            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                                @Override
+                                public void run() {
+                                    probeHost();
+                                }
+                            }, 1800L);
+                        }
                     }
                 });
             }
@@ -366,6 +379,10 @@ public class SettingsActivity extends Activity {
             head = "缺少 root";
             color = Ui.ERROR;
             hint = "点下面「root 权限」授权后才能截屏";
+        } else if (System.currentTimeMillis() < restartingUntil) {
+            head = "正在重启蜜蜂记账";
+            color = Ui.WARN;
+            hint = "几秒后自动刷新";
         } else if (!hostAnswered) {
             head = "未连上蜜蜂记账";
             color = Ui.ERROR;
@@ -472,6 +489,9 @@ public class SettingsActivity extends Activity {
                         }
                         hostAnswered = false;
                         hookCount = -1;
+                        // 强制停止后宿主进程确实没了，但这是"我们主动干的"，
+                        // 不能报成"连不上"——给它一个重启窗口，期间显示"正在重启"。
+                        restartingUntil = System.currentTimeMillis() + 8000L;
                         refreshStatus();
                         // 等强停真正落地再启动，否则可能被系统忽略
                         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
@@ -481,6 +501,13 @@ public class SettingsActivity extends Activity {
                                 if (stopped) {
                                     Logx.i("[settings] host restarted");
                                 }
+                                // 它起来还需要一点时间，过几秒自动再探一次
+                                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        probeHost();
+                                    }
+                                }, 2500L);
                             }
                         }, 700L);
                     }
@@ -569,18 +596,29 @@ public class SettingsActivity extends Activity {
     // AppWidgetHost 的职责，`cmd appwidget` 只管绑定权限）。留一个点了没反应的按钮
     // 比不给更糟，所以按钮和这两个方法一起删掉，改成在正文里直接写清楚手动步骤。
 
+    /**
+     * 请系统把磁贴加到控制中心。
+     *
+     * <h3>为什么以前"点了没反应"</h3>
+     * 系统接口 {@code requestAddTileService} 有几种返回：已添加 / 新增成功 / 被取消 / 未添加。
+     * 原实现**只写日志**，界面上什么都不显示——磁贴早就加过的时候，系统连弹窗都不会给，
+     * 用户看到的就是一个"死按钮"。
+     *
+     * <p>现在：每种结果都明确告诉用户；并且加一个看门狗——有些 ROM 压根不回调，
+     * 1.2 秒没动静就直接给出手动添加的步骤。
+     */
     private void requestAddTile() {
         if (Build.VERSION.SDK_INT < 33) {
-            Toast.makeText(this,
-                    "这个系统版本不支持自动添加，请手动：控制中心 → 编辑 → 找到「记账截图」拖上去",
-                    Toast.LENGTH_LONG).show();
+            showManualAddHint("这个系统版本不支持自动添加");
             return;
         }
+        final boolean[] answered = new boolean[]{false};
         try {
             android.app.StatusBarManager sbm =
                     (android.app.StatusBarManager) getSystemService(Context.STATUS_BAR_SERVICE);
             if (sbm == null) {
-                throw new IllegalStateException("StatusBarManager unavailable");
+                showManualAddHint("系统没有提供 StatusBarManager");
+                return;
             }
             ComponentName tile = new ComponentName(this, ShotTileService.class);
             Executor executor = new Executor() {
@@ -592,19 +630,53 @@ public class SettingsActivity extends Activity {
             java.util.function.Consumer<Integer> callback =
                     new java.util.function.Consumer<Integer>() {
                         @Override
-                        public void accept(Integer resultCode) {
-                            Logx.i("[settings] requestAddTileService result=" + resultCode);
+                        public void accept(Integer code) {
+                            answered[0] = true;
+                            int c = code == null ? -1 : code;
+                            Logx.i("[settings] requestAddTileService result=" + c);
+                            if (c == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
+                                showToast("已加到控制中心");
+                            } else if (c == android.app.StatusBarManager
+                                    .TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED) {
+                                showToast("磁贴已经在控制中心里了，下拉就能看到");
+                            } else {
+                                // 注意：Android 只定义了两个"结果"码（已添加 / 新增成功），
+                                // 其余都是 TILE_ADD_REQUEST_ERROR_* 之类的失败码。
+                                showManualAddHint("系统没有自动添加（返回码 " + c + "）");
+                            }
                         }
                     };
             sbm.requestAddTileService(tile, "记账截图",
                     Icon.createWithResource(this, android.R.drawable.ic_menu_camera),
                     executor, callback);
+
+            // 看门狗：部分 ROM 不回调，不能让用户对着没反应的按钮发呆
+            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!answered[0]) {
+                        Logx.w("[settings] requestAddTileService 无回调，给手动指引");
+                        showManualAddHint("系统没有响应添加请求");
+                    }
+                }
+            }, 1200L);
         } catch (Throwable t) {
             Logx.e("[settings] requestAddTileService failed", t);
-            Toast.makeText(this,
-                    "自动添加失败，请手动：控制中心 → 编辑 → 找到「记账截图」拖上去",
-                    Toast.LENGTH_LONG).show();
+            showManualAddHint("自动添加失败：" + t.getMessage());
         }
+    }
+
+    /** 手动添加磁贴的步骤（自动添加不可用时兜底）。 */
+    private void showManualAddHint(String why) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("手动添加磁贴")
+                .setMessage(why + "\n\n请按这个步骤手动加：\n"
+                        + "① 下拉控制中心 → 点右上角「编辑」（铅笔图标）\n"
+                        + "② 在下方「可用磁贴 / 未添加」里找到「记账截图」\n"
+                        + "③ 把它拖到上面 → 点完成\n\n"
+                        + "加过一次之后就不用再加了。")
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     /** 申请「读取照片」权限的请求码（跟通知权限的 1001 区分开）。 */
