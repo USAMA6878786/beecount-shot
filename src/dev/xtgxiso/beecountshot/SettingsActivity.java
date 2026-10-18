@@ -439,24 +439,115 @@ public class SettingsActivity extends Activity {
         }
     }
 
+    /**
+     * 申请 / 重新检测 root。
+     *
+     * <h3>为什么要分情况说</h3>
+     * 原来不管有没有授权，先弹一句"请在弹出的授权框里允许…"。
+     * 但 root **已经授权**时 {@code su} 直接成功，压根不会有弹窗 ——
+     * 用户（尤其 KernelSU / APatch，有些配置下只在通知栏提示、不弹窗）会以为按钮没反应。
+     *
+     * <p>现在：已授权就直接说"已授权"；没授权才提示去管理器里看，
+     * 并且能一键打开 root 管理器。
+     */
     private void requestRoot() {
-        Toast.makeText(this, "正在申请 root，请在弹出的授权框里允许…", Toast.LENGTH_LONG).show();
+        if (RootShell.isGranted(this)) {
+            showToast("root 已授权");
+            refreshStatus();
+            return;
+        }
+        final String mgr = rootManagerLabel();
+        Toast.makeText(this, "正在请求 root…（若没看到弹窗，请到 " + mgr + " 里授权）",
+                Toast.LENGTH_LONG).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final boolean ok = RootShell.isGranted(SettingsActivity.this)
-                        || RootShell.request(SettingsActivity.this);
+                final boolean ok = RootShell.request(SettingsActivity.this);
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         refreshStatus();
-                        Toast.makeText(SettingsActivity.this,
-                                ok ? "root 已授权" : "未获得 root，部分功能不可用",
-                                Toast.LENGTH_LONG).show();
+                        if (ok) {
+                            showToast("root 已授权");
+                        } else {
+                            showRootDenied(mgr);
+                        }
                     }
                 });
             }
         }, "bee-root-request").start();
+    }
+
+    /**
+     * 没拿到 root 时的说明。
+     *
+     * <p>不写"请在弹出的框里允许"——KernelSU / APatch 在部分配置下**不弹窗**，
+     * 只往通知栏丢一条，甚至完全静默。所以直接告诉用户去管理器里点。
+     */
+    private void showRootDenied(String mgr) {
+        final String pkg = rootManagerPackage();
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                .setTitle("还没拿到 root")
+                .setMessage("请打开「" + mgr + "」，在「超级用户 / 权限」列表里找到"
+                        + "「记账截图」并允许。\n\n"
+                        + "有些管理器（KernelSU / APatch）在这种情况下不弹窗，"
+                        + "只在通知栏提示一句，或者需要你自己去列表里加。\n\n"
+                        + "授权完回到这里点一次「root 权限」即可重新检测。")
+                .setPositiveButton("知道了", null);
+        if (pkg != null) {
+            b.setNeutralButton("打开 " + mgr, new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    openRootManager(pkg);
+                }
+            });
+        }
+        b.show();
+    }
+
+    /** root 管理器的展示名（按已安装的包判断）。 */
+    private String rootManagerLabel() {
+        String pkg = rootManagerPackage();
+        if ("me.weishu.kernelsu".equals(pkg)) {
+            return "KernelSU";
+        }
+        if ("com.topjohnwu.magisk".equals(pkg)) {
+            return "Magisk";
+        }
+        if ("me.bmax.apatch".equals(pkg)) {
+            return "APatch";
+        }
+        return "root 管理器";
+    }
+
+    /** 已安装的 root 管理器包名（没装则 null）。 */
+    private String rootManagerPackage() {
+        String[] cands = {"me.weishu.kernelsu", "com.topjohnwu.magisk", "me.bmax.apatch"};
+        for (String p : cands) {
+            try {
+                getPackageManager().getPackageInfo(p, 0);
+                return p;
+            } catch (Throwable ignored) {
+                // 没装，继续看下一个
+            }
+        }
+        return null;
+    }
+
+    /** 打开 root 管理器（用它的启动入口，不硬编码 Activity 名）。 */
+    private void openRootManager(String pkg) {
+        try {
+            android.content.Intent it = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (it == null) {
+                showToast("打不开 " + pkg);
+                return;
+            }
+            it.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(it);
+        } catch (Throwable t) {
+            Logx.e("[settings] open root manager failed", t);
+            showToast("打开失败：" + t.getMessage());
+        }
     }
 
     /**
