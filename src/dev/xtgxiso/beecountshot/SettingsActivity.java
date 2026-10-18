@@ -114,19 +114,20 @@ public class SettingsActivity extends Activity {
         // ---------------- 使用前提 ----------------
         heading(root, "使用前提");
         body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
-                + "• 已授予本模块 root（截屏、收起控制中心、补发放行信号、重启宿主）\n"
-                + "• 已授予蜜蜂记账本体 root（只有删截图要用）\n"
-                + "• **建议开启「记账截图」的截屏服务（无障碍）**：它是截屏的主路径，\n"
-                + "  不走按键注入，最快也最稳。没开也能用，会自动退回 root 模拟按键。");
+                + "• 已授予本模块 root（**截屏、收起面板、删截图、重启宿主都要用它**）\n"
+                + "• 已授予蜜蜂记账本体 root（它自己删截图时用）\n"
+                + "• 无障碍服务**不是必须的**：模块会优先用 root 直接抓帧，"
+                + "抓不到才退回无障碍、再退回模拟按键。");
 
         // ---------------- 磁贴 ----------------
         heading(root, "控制中心磁贴");
-        body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → **立刻**截当前屏幕"
-                + " → 交给蜜蜂记账识别记账（不等待，收面板命令一发出就截）。\n\n"
-                + "截屏有两条路，都走系统真实截图流程（有动画、进相册）：\n"
-                + "① 「截屏服务」（无障碍）直调系统截屏动作——**主路径，最快最稳**；\n"
-                + "② 没开的话退回 root 模拟「电源键 + 音量下」。这条偶尔会有一条命令不生效、"
-                + "要重试一次，所以建议把①开着（模块会自己帮你开）。\n\n"
+        body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → 等约 0.15 秒让面板动画走完"
+                + " → 截当前屏幕 → 交给蜜蜂记账识别记账。\n\n"
+                + "截屏有三级降级，**默认走第一条**：\n"
+                + "① **root 直接抓帧**（`screencap`）——**主路径**，不依赖按键、不依赖无障碍，"
+                + "约 0.25 秒出图，跟面板状态无关；\n"
+                + "② 第一条失败时退回「截屏服务」（无障碍）直调系统截屏动作；\n"
+                + "③ 再失败才退回 root 模拟「电源键 + 音量下」——这条偶尔要重试，只作兜底。\n\n"
                 + "**平时的普通截图不会再触发识别**，只有点这个磁贴那一次会。\n"
                 + "连着点几次也能一张不漏地分别记账。");
         button(root, "添加「记账截图」磁贴", new View.OnClickListener() {
@@ -138,11 +139,12 @@ public class SettingsActivity extends Activity {
 
         // ---------------- root ----------------
         heading(root, "root 权限");
-        body(root, "模块用 root 做四件事，都是纯应用层做不稳的：\n"
-                + "① 模拟组合键截屏（不用依赖无障碍服务）\n"
+        body(root, "模块用 root 做这些事，都是纯应用层做不稳的：\n"
+                + "① **直接抓帧截屏**（`screencap`，主路径）\n"
                 + "② 收起控制中心（不少定制系统上普通做法不生效）\n"
-                + "③ 补发一条放行广播（宿主退后台被冻结时，普通广播会被延迟投递）\n"
-                + "④ 下面的「重启蜜蜂记账」");
+                + "③ 删除截图（识别完成后清理相册）\n"
+                + "④ 重启蜜蜂记账 / 读取它的日志\n"
+                + "⑤ 帮你把无障碍服务打开（作为第二条截屏路径）");
         button(root, "申请 root 权限 / 重新检测", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -188,33 +190,36 @@ public class SettingsActivity extends Activity {
             ShotWatcher.ensureRegistered(this);
         }
 
-        button(root, "验证 raw+JPEG 提速（颜色自检）", new View.OnClickListener() {
+        button(root, "颜色校准（纯色块自检）", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                runRawCompare();
+                startActivity(new Intent(SettingsActivity.this, ColorProbeActivity.class));
             }
         });
-        body(root, "**这是纯测量，不改任何现有逻辑。** 同一帧分别用 PNG 和 raw→JPEG 各出一次，"
-                + "报告两者耗时，并**采样 9 个点的像素颜色做自动比对**——"
-                + "因为 raw 的通道顺序（RGBA/BGRA）在不同 ROM 上可能不一样，"
-                + "猜错就会红蓝互换。**颜色比对不通过，这条就不切。**");
+        body(root, "**会进入一个全屏四色块页面，测量完自动记住结果。**\n\n"
+                + "为什么需要它：截图有 PNG 和「原始像素→JPEG」两种编码方式，后者快约 37%，"
+                + "但原始像素的通道顺序（RGBA/BGRA）在不同 ROM 上不一样，猜错会红蓝互换。\n\n"
+                + "校准页画红/绿/蓝/青四块**纯色**再抓自己，跟已知色值逐块比对——"
+                + "纯色对通道最敏感，错的那个差值直接 255。\n\n"
+                + "**通过后，之后点磁贴就自动改用更快的 raw+JPEG；不通过则继续用 PNG。**"
+                + "换手机或刷机后重跑一次即可。");
 
-        button(root, "验证 screencap 截图链路（试验）", new View.OnClickListener() {
+        button(root, "检查截屏链路（诊断用）", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 runScreencapProbe();
             }
         });
-        body(root, "**这是试验，不会改动现有功能。** 点它会：① 用 root 直接抓一帧；"
-                + "② 把这张图作为「系统截图」写进相册；③ 再从相册读回来校验。\n\n"
-                + "如果三步都通过，说明以后可以**不用按键、不用无障碍**来截屏——"
-                + "那两条路正是目前「偶尔没反应 / 特别慢」的来源。结果会弹框显示，也不会留下测试图。");
+        body(root, "**只是自检，不改任何设置。** 点它会：① 用 root 直接抓一帧；"
+                + "② 把这张图作为「系统截图」写进相册；③ 再从相册读回来校验，确认记录正常。\n\n"
+                + "这是现在的**正式截屏路径**——不用按键、不用无障碍、跟面板状态无关。"
+                + "点磁贴没反应时，先跑一次这个，就能分清是「截屏坏了」还是「蜜蜂记账没识别」。");
 
         // ---------------- 常驻运行 ----------------
         heading(root, "常驻运行");
         body(root, "打开后模块会挂一个前台服务，让进程不被系统回收。好处有两个：\n"
                 + "① 点磁贴不必再冷启动进程（**第一次点击也能立刻响应**）；\n"
-                + "② 无障碍服务不会掉线（它是最快的截屏路径；掉线就只能用较慢的模拟按键兜底）。\n\n"
+                + "② 清理截图的后台任务不会被打断（否则那张图会留在相册里）。\n\n"
                 + "代价是一条常驻通知。它用的是**最低重要性**的通知渠道，"
                 + "所以**状态栏不会出现图标**，只在通知栏里有一条静默条目。\n\n"
                 + "如果连这一条也不想要：系统设置 → 通知 → 记账截图 → 把「常驻运行」这个渠道关掉，"
@@ -357,17 +362,18 @@ public class SettingsActivity extends Activity {
         // ---------------- 常见问题 ----------------
         heading(root, "常见问题");
         body(root, "**点了磁贴没反应**\n"
-                + "先看本页顶部状态；磁贴副标题也会提示。常见三种：\n"
-                + "① 既没 root、无障碍服务也没开 → 副标题会直接写「截屏服务未开启 · 点一下去开启」\n"
-                + "② 蜜蜂记账的界面被系统回收了 → 打开一次它即可（后台存活就够，不必留在前台），"
-                + "或用上面的「重启蜜蜂记账」\n"
-                + "③ root 没授权 → 点上面的「申请 root 权限 / 重新检测」\n\n"
+                + "先看本页顶部状态，磁贴副标题也会给出提示。常见三种：\n"
+                + "① root 没授权 → 点上面的「申请 root 权限 / 重新检测」（主路径要 root）\n"
+                + "② 蜜蜂记账的**截图监听没在跑** → 打开一次它、进「智能记账」确认截图监听已启用；"
+                + "它只在用户启用过之后才监听相册\n"
+                + "③ 蜜蜂记账的界面被系统回收了 → 打开一次它即可（后台存活就够，不必留在前台），"
+                + "或用上面的「重启蜜蜂记账」\n\n"
                 + "**改了配置不生效**\n"
                 + "点上面的「重启蜜蜂记账」，hook 只在它启动时注入。\n\n"
                 + "**截到的图里带着控制中心**\n"
-                + "理论上不该出现：收面板一发出就截屏，而且截屏走的是系统动作、不挑面板状态。\n"
-                + "真拍到了说明这台机器收面板比截屏慢——那就得改成「等系统确认面板已收起再截」，"
-                + "而不是拍脑袋等一个固定毫秒数。请把截图发我。\n\n"
+                + "说明这台机器收面板的动画比 0.15 秒更慢。现在截屏走的是 root 直接抓帧，"
+                + "抓的就是「那一瞬间的屏幕」，所以面板还没退干净就会拍进去。\n"
+                + "把截图发我，我把那个等待时间调大（`Const.SHOT_SETTLE_MS`）。\n\n"
                 + "**小部件显示灰色**\n"
                 + "说明蜜蜂记账的进程没在跑，此时显示的是上次的数值；打开一次它就会恢复实时。");
     }
@@ -709,34 +715,6 @@ public class SettingsActivity extends Activity {
 
     private void showToast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
-    }
-
-    /** 跑一次 raw+JPEG 对比（子线程，完成后弹框）。 */
-    private void runRawCompare() {
-        final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
-        pd.setMessage("正在对比 PNG 与 raw→JPEG…");
-        pd.setCancelable(false);
-        pd.show();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                final String report = RawShot.compare(SettingsActivity.this);
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            pd.dismiss();
-                        } catch (Throwable ignored) {
-                        }
-                        new android.app.AlertDialog.Builder(SettingsActivity.this)
-                                .setTitle("raw+JPEG 提速验证")
-                                .setMessage(report)
-                                .setPositiveButton("知道了", null)
-                                .show();
-                    }
-                });
-            }
-        }, "bee-raw-compare").start();
     }
 
     /** 跑一次 screencap 验证（子线程，完成后弹框）。 */
