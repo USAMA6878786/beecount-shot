@@ -243,6 +243,8 @@ final class Ui {
         GradientDrawable g = rounded(Color.TRANSPARENT, BUTTON_RADIUS, c);
         g.setStroke(Math.max(1, dp(c, 1)), OUTLINE_VARIANT);
         b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x1F8A5100), g, null));
+        // 曾经漏了这一行：按钮画得很像，但点了没反应。
+        b.setOnClickListener(l);
         return b;
     }
 
