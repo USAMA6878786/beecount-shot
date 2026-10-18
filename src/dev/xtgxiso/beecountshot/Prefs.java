@@ -10,11 +10,11 @@ public final class Prefs {
 
     private static final String FILE = "cfg";
     private static final String KEY_AUTO_DELETE = "auto_delete";
-    private static final String KEY_PRECISE = "precise_partial";
     private static final String KEY_HOST_PKG = "host_pkg";
     private static final String KEY_KEEP_ALIVE = "keep_alive";
     private static final String KEY_RAW_SWAP = "raw_swap";
     private static final String KEY_NOTIF_ASKED = "notif_asked";
+    private static final String KEY_MEDIA_ASKED = "media_asked";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
@@ -95,6 +95,24 @@ public final class Prefs {
         }
     }
 
+    /** 相册权限是否已经问过一次（只问一次，不再打扰）。 */
+    static boolean mediaAsked(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_MEDIA_ASKED, false);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    static void setMediaAsked(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_MEDIA_ASKED, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     /**
      * screencap raw 的通道顺序校准结果。
      *
@@ -143,30 +161,6 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putBoolean(KEY_AUTO_DELETE, v).apply();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /**
-     * 连点多次、其中几张没识别成功时，要不要按"先放行的先出结果"推断着删掉前面那几张。
-     *
-     * <p>默认开。开了才能做到"删掉成功的、留下没识别的"；代价是推断依赖
-     * "蜜蜂记账按上报先后依次处理"这个前提——万一失败的不是最后那几张，就会删错。
-     * 在意"绝不误删"就关掉，关掉后只要有失败就全部保留。
-     */
-    public static boolean precisePartial(Context c) {
-        try {
-            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_PRECISE, true);
-        } catch (Throwable t) {
-            return true;
-        }
-    }
-
-    public static void setPrecisePartial(Context c, boolean v) {
-        try {
-            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .edit().putBoolean(KEY_PRECISE, v).apply();
         } catch (Throwable ignored) {
         }
     }
