@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
@@ -33,6 +34,8 @@ import java.util.concurrent.Executor;
 public class SettingsActivity extends Activity {
 
     private TextView statusView;
+    /** 状态卡第二行：一行冰冷的事实（root / hook / 无障碍 / 监听）。 */
+    private TextView statusFacts;
 
     /** 来自宿主的实时状态（后台查询后刷新）。 */
     private volatile boolean hostAnswered = false;
@@ -43,46 +46,61 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 设置页用 NoActionBar 主题（见 AndroidManifest），所以这个标题**不会**显示在界面上，
-        // 它只影响"最近任务"里那张卡片的名字。版本号改写在状态行的最后一行。
-        setTitle("记账截图 · v" + versionName());
+        setTitle("记账截图");
         Logx.init(Prefs.appLogPath(this));
         Logx.i("[settings] opened, module " + versionName());
 
         ScrollView scroll = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(20);
-        root.setPadding(pad, pad, pad, pad);
-        scroll.addView(root);
-
-        // 别把正文画到系统栏底下。
-        //
-        // Android 15（API 35）起，targetSdk 35 的应用被**强制"边到边"**显示：内容会一直
-        // 画到状态栏、导航栏下面。本模块 targetSdk 就是 35，所以在较新的系统上，正文第一行
-        // 会被顶到状态栏/标题栏后面，看起来就像"被横幅盖住了"。
-        //
-        // setFitsSystemWindows(true) 让这层视图自动把系统栏的高度让出来（补成内边距）。
-        // 在还没强制边到边的老系统上，系统本来就已经让好了位置、剩余 inset 是 0，这行无副作用。
+        scroll.setBackgroundColor(Ui.BACKGROUND);
         scroll.setFitsSystemWindows(true);
 
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = Ui.dp(this, Ui.PAGE_PAD);
+        root.setPadding(pad, pad, pad, pad);
+        scroll.addView(root);
         setContentView(scroll);
 
+        // ---------------- 标题 ----------------
+        root.addView(Ui.title(this, "记账截图"), Ui.lp(-1, -2, 0, 4, 0, 2));
+        root.addView(Ui.caption(this, "v" + versionName() + " · 点磁贴才记账"),
+                Ui.lp(-1, -2, 0, 0, 0, 14));
+
         // ---------------- 状态 ----------------
+        LinearLayout statusCard = Ui.card(this, root, null);
         statusView = new TextView(this);
-        statusView.setTextSize(14f);
-        statusView.setPadding(dp(12), dp(12), dp(12), dp(12));
-        root.addView(statusView);
+        statusView.setTextSize(14.5f);
+        statusView.setLineSpacing(Ui.dp(this, 3), 1f);
+        statusCard.addView(statusView);
+        statusFacts = Ui.caption(this, "");
+        statusCard.addView(statusFacts, Ui.lp(-1, -2, 0, 4, 0, 0));
+
+        LinearLayout statusActions = new LinearLayout(this);
+        statusActions.setOrientation(LinearLayout.HORIZONTAL);
+        TextView bRestart = Ui.tonalButton(this, "重启蜜蜂记账", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                restartHost();
+            }
+        });
+        TextView bRoot = Ui.textButton(this, "root 权限", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestRoot();
+            }
+        });
+        LinearLayout.LayoutParams half = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        statusActions.addView(bRestart, half);
+        statusActions.addView(bRoot, half);
+        statusCard.addView(statusActions, Ui.lp(-1, -2, 0, 12, 0, 0));
+        // 先渲染一次，避免探测回调到达前状态卡是空白
         refreshStatus();
 
-        // 顺手请系统重新绑定一次磁贴。原因：应用被覆盖安装后磁贴常被"晾着"，
-        // 图标还在、点了没反应，过一阵子又自己好——主动请求一次能让它早点恢复，
-        // 也让副标题立刻刷新成最新状态。（打开设置页是个很自然的时机。）
+        // 让磁贴尽早重新绑定（打开设置页是个自然时机）
         ShotTileService.requestRefresh(this);
 
-        // 无障碍服务没开的话，用 root 帮用户打开。原因见 RootShell.ensureAccessibilityEnabled()：
-        // 它是截屏又快又稳的那条主路径，而覆盖安装模块后系统会自动把它关掉——
-        // 用户往往不会再去手动开一次，于是一直退在慢的 root 模拟按键上。
+        // 无障碍没开就用 root 帮用户打开（它是第二截屏路径）
         if (!ShotAccessibilityService.isReady()) {
             new Thread(new Runnable() {
                 @Override
@@ -93,11 +111,10 @@ public class SettingsActivity extends Activity {
             }, "bee-ensure-a11y").start();
         }
 
-        // 先把通知渠道建出来：系统设置里"一个渠道都没有"的应用，
-        // 它的"允许通知"总开关是灰的、点不动——用户会以为是模块坏了。
+        // 先把通知渠道建出来，否则系统设置里"允许通知"是灰的
         KeepAliveService.ensureChannel(this);
 
-        // 后台 Toast 需要悬浮窗权限——打开设置页时顺手授一次（子线程，要开 root shell）。
+        // 后台 Toast 需要悬浮窗权限，顺手授一次
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -105,278 +122,194 @@ public class SettingsActivity extends Activity {
             }
         }, "bee-overlay-grant").start();
 
-        // 打开设置页时应用在前台，正是把常驻服务拉起来的合法时机。
-        if (Prefs.keepAlive(this)) {
-            KeepAliveService.start(this);
-            requestNotifPermissionIfNeeded();
-        }
-
-        // ---------------- 使用前提 ----------------
-        heading(root, "使用前提");
-        body(root, "• 已安装 LSPosed，并在其中启用本模块、作用域勾选「蜜蜂记账」\n"
-                + "• 已授予本模块 root（**截屏、收起面板、删截图、重启宿主都要用它**）\n"
-                + "• 已授予蜜蜂记账本体 root（它自己删截图时用）\n"
-                + "• 无障碍服务**不是必须的**：模块会优先用 root 直接抓帧，"
-                + "抓不到才退回无障碍、再退回模拟按键。");
-
         // ---------------- 磁贴 ----------------
-        heading(root, "控制中心磁贴");
-        body(root, "把磁贴加到控制中心后，点一下就会：收起面板 → 等约 0.15 秒让面板动画走完"
-                + " → 截当前屏幕 → 交给蜜蜂记账识别记账。\n\n"
-                + "截屏有三级降级，**默认走第一条**：\n"
-                + "① **root 直接抓帧**（`screencap`）——**主路径**，不依赖按键、不依赖无障碍，"
-                + "约 0.25 秒出图，跟面板状态无关；\n"
-                + "② 第一条失败时退回「截屏服务」（无障碍）直调系统截屏动作；\n"
-                + "③ 再失败才退回 root 模拟「电源键 + 音量下」——这条偶尔要重试，只作兜底。\n\n"
-                + "**平时的普通截图不会再触发识别**，只有点这个磁贴那一次会。\n"
-                + "连着点几次也能一张不漏地分别记账。");
-        button(root, "添加「记账截图」磁贴", new View.OnClickListener() {
+        LinearLayout tileCard = Ui.card(this, root, "磁贴");
+        LinearLayout tileRow = Ui.row(this);
+        LinearLayout tileLeft = new LinearLayout(this);
+        tileLeft.setOrientation(LinearLayout.VERTICAL);
+        tileLeft.addView(Ui.rowTitle(this, "控制中心磁贴"));
+        tileLeft.addView(Ui.caption(this, "收起面板 → 截屏 → 交给蜜蜂记账"));
+        tileRow.addView(tileLeft, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        tileRow.addView(Ui.filledButton(this, "添加", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 requestAddTile();
             }
-        });
+        }));
+        tileCard.addView(tileRow);
+        if (ShotAccessibilityService.isReady()) {
+            tileCard.addView(Ui.caption(this, "截屏走 root 抓帧；无障碍已开启，作为第二条路径"),
+                    Ui.lp(-1, -2, 0, 6, 0, 0));
+        }
 
-        // ---------------- root ----------------
-        heading(root, "root 权限");
-        body(root, "模块用 root 做这些事，都是纯应用层做不稳的：\n"
-                + "① **直接抓帧截屏**（`screencap`，主路径）\n"
-                + "② 收起控制中心（不少定制系统上普通做法不生效）\n"
-                + "③ 删除截图（识别完成后清理相册）\n"
-                + "④ 重启蜜蜂记账 / 读取它的日志\n"
-                + "⑤ 帮你把无障碍服务打开（作为第二条截屏路径）");
-        button(root, "申请 root 权限 / 重新检测", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                requestRoot();
-            }
-        });
-        button(root, "重启蜜蜂记账", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                restartHost();
-            }
-        });
-        body(root, "强制停止并重新打开。改完模块配置后 hook 需要重新注入，点它一次就够；"
-                + "没给 root 时只会帮你打开它（无法强制停止）。");
+        // ---------------- 行为 ----------------
+        LinearLayout behaviorCard = Ui.card(this, root, "行为");
 
-        // ---------------- 等待时长（v2.18 已移除） ----------------
-        //
-        // 原来这里有一组「收面板后等多久才截屏」的档位（150/300/600/900/1300ms）。
-        // 已整个去掉：截屏现在走无障碍直调系统截屏动作，不经过按键注入，
-        // 跟控制中心面板收没收干净没有关系——那段等待是配合老路径的，没有存在理由了。
-        // 「收起面板」这个动作本身**保留**（不收的话控制面板会出现在截图里）。
+        Ui.switchRow(this, behaviorCard, "常驻运行", "进程不被回收，点磁贴立刻响应",
+                Prefs.keepAlive(this), new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                        Prefs.setKeepAlive(SettingsActivity.this, on);
+                        Logx.i("[settings] keep-alive set to " + on);
+                        if (on) {
+                            KeepAliveService.ensureChannel(SettingsActivity.this);
+                            KeepAliveService.start(SettingsActivity.this);
+                            requestNotifPermissionIfNeeded();
+                        } else {
+                            KeepAliveService.stop(SettingsActivity.this);
+                        }
+                    }
+                });
 
-        // ---------------- 截图确认提速 ----------------
-        heading(root, "截图确认提速");
-        body(root, "打开后模块会**自己监听相册**，用来判断「刚才那张截图存好了没有」，"
-                + "不再每次都让 root 去扫文件目录。\n\n"
-                + "效果：确认环节从 200~350 毫秒降到几十毫秒，一次点击少起 2~3 个 root 进程。\n\n"
-                + "需要「读取照片」权限（只用来判断最新一张截图是否落盘，不外传）。"
-                + "**不给也没关系**——会自动退回原来的扫描方式，只是慢一点。");
+        Ui.switchRow(this, behaviorCard, "识别后删除截图", "蜜蜂记账读完就清理相册",
+                Prefs.autoDelete(this), new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                        Prefs.setAutoDelete(SettingsActivity.this, on);
+                        Logx.i("[settings] auto-delete set to " + on);
+                    }
+                });
+
+        Ui.switchRow(this, behaviorCard, "日志读不到时兜底", "按「先截先删」推断，可能误删",
+                Prefs.precisePartial(this), new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                        Prefs.setPrecisePartial(SettingsActivity.this, on);
+                        Logx.i("[settings] precise-partial set to " + on);
+                    }
+                });
+
+        // ---------------- 提速 ----------------
+        LinearLayout speedCard = Ui.card(this, root, "提速");
         final boolean hasMedia = ShotWatcher.hasPermission(this);
-        CheckBox fastProbe = new CheckBox(this);
-        fastProbe.setText(hasMedia ? "已开启（相册监听生效）" : "开启相册监听（需要「读取照片」权限）");
-        fastProbe.setChecked(hasMedia);
-        fastProbe.setEnabled(!hasMedia);
-        fastProbe.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                requestMediaPermissionIfNeeded();
-            }
-        });
-        root.addView(fastProbe);
+        Ui.switchRow(this, speedCard, "相册监听", hasMedia ? "已生效" : "需要「读取照片」权限",
+                hasMedia, new CompoundButton.OnCheckedChangeListener() {
+                    @Override
+                    public void onCheckedChanged(CompoundButton b, boolean on) {
+                        requestMediaPermissionIfNeeded();
+                    }
+                });
         if (hasMedia) {
             ShotWatcher.ensureRegistered(this);
         }
 
-        button(root, "颜色校准（纯色块自检）", new View.OnClickListener() {
+        TextView bColor = Ui.tonalButton(this, "颜色校准", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 startActivity(new Intent(SettingsActivity.this, ColorProbeActivity.class));
             }
         });
-        body(root, "**会进入一个全屏四色块页面，测量完自动记住结果。**\n\n"
-                + "为什么需要它：截图有 PNG 和「原始像素→JPEG」两种编码方式，后者快约 37%，"
-                + "但原始像素的通道顺序（RGBA/BGRA）在不同 ROM 上不一样，猜错会红蓝互换。\n\n"
-                + "校准页画红/绿/蓝/青四块**纯色**再抓自己，跟已知色值逐块比对——"
-                + "纯色对通道最敏感，错的那个差值直接 255。\n\n"
-                + "**通过后，之后点磁贴就自动改用更快的 raw+JPEG；不通过则继续用 PNG。**"
-                + "换手机或刷机后重跑一次即可。");
+        speedCard.addView(bColor, Ui.buttonLp(this, false));
 
-        button(root, "检查截屏链路（诊断用）", new View.OnClickListener() {
+        TextView bProbe = Ui.textButton(this, "检查截屏链路", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 runScreencapProbe();
             }
         });
-        body(root, "**只是自检，不改任何设置。** 点它会：① 用 root 直接抓一帧；"
-                + "② 把这张图作为「系统截图」写进相册；③ 再从相册读回来校验，确认记录正常。\n\n"
-                + "这是现在的**正式截屏路径**——不用按键、不用无障碍、跟面板状态无关。"
-                + "点磁贴没反应时，先跑一次这个，就能分清是「截屏坏了」还是「蜜蜂记账没识别」。");
+        speedCard.addView(bProbe, Ui.buttonLp(this, false));
 
-        // ---------------- 常驻运行 ----------------
-        heading(root, "常驻运行");
-        body(root, "打开后模块会挂一个前台服务，让进程不被系统回收。好处有两个：\n"
-                + "① 点磁贴不必再冷启动进程（**第一次点击也能立刻响应**）；\n"
-                + "② 清理截图的后台任务不会被打断（否则那张图会留在相册里）。\n\n"
-                + "代价是一条常驻通知。它用的是**最低重要性**的通知渠道，"
-                + "所以**状态栏不会出现图标**，只在通知栏里有一条静默条目。\n\n"
-                + "如果连这一条也不想要：系统设置 → 通知 → 记账截图 → 把「常驻运行」这个渠道关掉，"
-                + "服务本身照常运行。");
-        CheckBox keepAlive = new CheckBox(this);
-        keepAlive.setText("常驻运行（保证点磁贴立刻响应）");
-        keepAlive.setChecked(Prefs.keepAlive(this));
-        keepAlive.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                Prefs.setKeepAlive(SettingsActivity.this, isChecked);
-                Logx.i("[settings] keep-alive set to " + isChecked);
-                if (isChecked) {
-                    KeepAliveService.ensureChannel(SettingsActivity.this);
-                    KeepAliveService.start(SettingsActivity.this);
-                    requestNotifPermissionIfNeeded();
-                } else {
-                    KeepAliveService.stop(SettingsActivity.this);
-                }
-            }
-        });
-        root.addView(keepAlive);
-
-        // ---------------- 自动删截图 ----------------
-        heading(root, "识别完成后删除截图");
-        body(root, "打开后：**凡是点磁贴截的图，蜜蜂记账识别完就删**——"
-                + "不管有没有识别出账单。\n\n"
-                + "之所以都能删：会走到这一步的图只可能是点磁贴截的那几张，"
-                + "而蜜蜂记账每处理完一张就写一条「AI 识别 + 落库完成」日志——"
-                + "看到这条说明它**已经把图读完识别完了**，这张图对你就没用了。\n\n"
-                + "另外还有几道硬门槛，缺一不删：\n"
-                + "① 这张图确实是闸门放行给蜜蜂记账的那一张\n"
-                + "② 路径必须是图片、名字带截图字样、不在相机目录、不含特殊字符\n\n"
-                + "没识别完的**不会提前删**——只会一直等它出结果；等不到就一直留着。");
-        CheckBox autoDelete = new CheckBox(this);
-        autoDelete.setText("识别完成后删除对应的截图");
-        autoDelete.setChecked(Prefs.autoDelete(this));
-        autoDelete.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                Prefs.setAutoDelete(SettingsActivity.this, isChecked);
-                Logx.i("[settings] auto-delete set to " + isChecked);
-            }
-        });
-        root.addView(autoDelete);
-
-        CheckBox precise = new CheckBox(this);
-        precise.setText("日志读不到时的兜底：按「先截的先出结果」推断着删");
-        precise.setChecked(Prefs.precisePartial(this));
-        precise.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                Prefs.setPrecisePartial(SettingsActivity.this, isChecked);
-                Logx.i("[settings] precise-partial set to " + isChecked);
-            }
-        });
-        root.addView(precise);
-        body(root, "**正常情况用不到这个开关。** 蜜蜂记账每处理完一张图会写一条"
-                + "「AI 识别 + 落库完成」日志，模块按这条日志跟放行的先后顺序一一对上，"
-                + "就知道哪张已经识别完了——这是上面的正常路径。\n\n"
-                + "万一以后蜜蜂记账改了日志措辞、这条读不到了，才会退回按「自动记账成功」的次数推断：\n\n"
-                + "**打开**——按「先截的先出结果」推断，删前面那几张。"
-                + "这依赖蜜蜂记账按顺序依次处理；万一没成的是中间那张，就会删错。\n\n"
-                + "**关掉**——最保守：这一批里只要有一张没成功，整批都留着，等你手动处理。");
-
-        // ---------------- 桌面小组件 ----------------
-        heading(root, "桌面小组件");
-        body(root, "一个小部件同时显示「今日 / 本周 / 本月支出」，白底，默认 2×1。\n"
-                + "横向拉长后会自动从「上下三行」变成「左中右三列」。\n"
-                + "点一下小部件会刷新数字并打开蜜蜂记账的记账明细页。\n\n"
-                + "数字直接读蜜蜂记账自己的数据库，与它统计页的口径一致"
-                + "（跟随账本的自定义每月起始日、周一起算、剔除「不计入收支」的记账）。\n\n"
-                + "在蜜蜂记账里增删改账目，或手动记一笔，小部件都会在几秒内跟着更新。");
-        // v2.20：把原来那个「把「记账支出」放到桌面」按钮**去掉了**。
-        //
-        // 原因：那个按钮调的是 AppWidgetManager.requestPinAppWidget，前提是桌面实现了
-        // "钉住小组件"这套接口。小米桌面（以及不少第三方桌面）会返回"支持"，
-        // 但**点了完全没反应**——属于系统的坑，不是我们没调对。
-        //
-        // 而"把小组件放到桌面"这件事 **root 也做不到**：桌面是另一个应用（启动器），
-        // 往它桌面上摆东西归它自己的 AppWidgetHost 管，没有任何 shell / root 接口
-        // （`cmd appwidget` 只管绑定权限，管不了摆放）。
-        //
-        // 所以干脆不给按钮了——留一个点了没反应的按钮比不给更糟。
-        body(root, "**添加方法**（应用没法自己放，root 也不行）：\n"
-                + "回到桌面 → 长按空白处 → 点「添加小部件」（小米里可能叫「添加工具」）→ "
-                + "找到「记账支出」→ 按住拖到桌面上。\n\n"
-                + "之所以要手动，是因为往桌面摆小组件是**桌面应用自己的事**，"
-                + "Android 没有给任何应用（包括有 root 的）提供这个接口。");
-
-        final TextView alphaLabel = new TextView(this);
-        alphaLabel.setTextSize(14f);
-        alphaLabel.setPadding(0, dp(14), 0, dp(2));
-        root.addView(alphaLabel);
-
+        // ---------------- 小组件 ----------------
+        LinearLayout widgetCard = Ui.card(this, root, "桌面小组件");
+        final TextView alphaLabel = Ui.rowTitle(this, "背景不透明度  85%");
+        widgetCard.addView(alphaLabel);
         SeekBar alphaBar = new SeekBar(this);
         alphaBar.setMax(100);
         alphaBar.setProgress(Math.round(WidgetPrefs.defaultAlpha(this) * 100f / 255f));
-        alphaLabel.setText("背景不透明度（统一应用到所有小部件）："
-                + alphaBar.getProgress() + "%");
+        alphaLabel.setText("背景不透明度  " + alphaBar.getProgress() + "%");
         alphaBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                alphaLabel.setText("背景不透明度（统一应用到所有小部件）：" + progress + "%");
+            public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                alphaLabel.setText("背景不透明度  " + progress + "%");
             }
 
             @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {
+            public void onStartTrackingTouch(SeekBar sb) {
             }
 
             @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {
-                // 松手才写盘 + 刷新，避免拖动过程中反复重绘
+            public void onStopTrackingTouch(SeekBar sb) {
                 WidgetPrefs.setDefaultAlphaForAll(SettingsActivity.this,
-                        Math.round(seekBar.getProgress() * 255f / 100f));
+                        Math.round(sb.getProgress() * 255f / 100f));
                 ExpenseWidgetProvider.refreshAll(getApplicationContext());
-                Toast.makeText(SettingsActivity.this, "已应用", Toast.LENGTH_SHORT).show();
             }
         });
-        root.addView(alphaBar);
-        body(root, "只想调某一个？长按桌面上那个小部件 → 重新配置，只改它自己。");
+        widgetCard.addView(alphaBar, Ui.lp(-1, -2, 0, 8, 0, 0));
+        widgetCard.addView(Ui.caption(this, "只改某一个小部件：长按桌面上的它 → 重新配置"),
+                Ui.lp(-1, -2, 0, 4, 0, 0));
 
-        // ---------------- 日志 ----------------
-        heading(root, "日志与诊断");
-        body(root, "出问题时点下面两个按钮，然后取 `Download/" + Const.LOG_DIR + "/` 目录里的"
-                + "`logcat.txt` 和 `app.log` 即可。");
-        button(root, "跑一次诊断（写入日志）", new View.OnClickListener() {
+        // ---------------- 帮助 ----------------
+        LinearLayout helpCard = Ui.card(this, root, "帮助");
+        TextView bGuide = Ui.textButton(this, "使用说明", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                runDiagnostics();
+                showText("使用说明", GUIDE);
             }
         });
-        button(root, "导出日志到 Download", new View.OnClickListener() {
+        helpCard.addView(bGuide, Ui.buttonLp(this, true));
+        TextView bFaq = Ui.textButton(this, "常见问题", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showText("常见问题", FAQ);
+            }
+        });
+        helpCard.addView(bFaq, Ui.buttonLp(this, false));
+        TextView bLog = Ui.textButton(this, "导出日志", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 exportLogs();
             }
         });
+        helpCard.addView(bLog, Ui.buttonLp(this, false));
+        TextView bDiag = Ui.textButton(this, "跑一次诊断", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                runDiagnostics();
+            }
+        });
+        helpCard.addView(bDiag, Ui.buttonLp(this, false));
 
-        // ---------------- 常见问题 ----------------
-        heading(root, "常见问题");
-        body(root, "**点了磁贴没反应**\n"
-                + "先看本页顶部状态，磁贴副标题也会给出提示。常见三种：\n"
-                + "① root 没授权 → 点上面的「申请 root 权限 / 重新检测」（主路径要 root）\n"
-                + "② 蜜蜂记账的**截图监听没在跑** → 打开一次它、进「智能记账」确认截图监听已启用；"
-                + "它只在用户启用过之后才监听相册\n"
-                + "③ 蜜蜂记账的界面被系统回收了 → 打开一次它即可（后台存活就够，不必留在前台），"
-                + "或用上面的「重启蜜蜂记账」\n\n"
-                + "**改了配置不生效**\n"
-                + "点上面的「重启蜜蜂记账」，hook 只在它启动时注入。\n\n"
-                + "**截到的图里带着控制中心**\n"
-                + "说明这台机器收面板的动画比 0.15 秒更慢。现在截屏走的是 root 直接抓帧，"
-                + "抓的就是「那一瞬间的屏幕」，所以面板还没退干净就会拍进去。\n"
-                + "把截图发我，我把那个等待时间调大（`Const.SHOT_SETTLE_MS`）。\n\n"
-                + "**小部件显示灰色**\n"
-                + "说明蜜蜂记账的进程没在跑，此时显示的是上次的数值；打开一次它就会恢复实时。");
+        // 打开后立刻探一次宿主状态
+        probeHost();
     }
+
+    /** 统一的文本弹窗（把长说明从页面上挪走，保持界面清爽）。 */
+    private void showText(String title, String text) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(text)
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
+    /** 使用说明（点「使用说明」才看，不再占页面）。 */
+    private static final String GUIDE =
+            "前提\n"
+            + "• LSPosed 里启用本模块，作用域勾选「蜜蜂记账」\n"
+            + "• 给本模块 root（截屏、收面板、删图都要用）\n"
+            + "• 进一次蜜蜂记账的「智能记账」，确认截图监听已开启\n\n"
+            + "截屏是三级降级：\n"
+            + "① root 抓帧（主路径，约 0.25 秒）\n"
+            + "② 无障碍直调系统截屏\n"
+            + "③ root 模拟按键（兜底）\n\n"
+            + "整个过程：收起面板 → 等 0.15 秒 → 截屏 → 弹「截图成功」→ 蜜蜂记账识别 → 识别完成后删图。\n\n"
+            + "从点击到删图实测约 10 秒，大头在蜜蜂记账自己的检测与 AI 识别（3~5 秒）。";
+
+    /** 常见问题。 */
+    private static final String FAQ =
+            "点了磁贴没反应？\n"
+            + "① 看顶部状态和磁贴副标题；② root 是否授权；"
+            + "③ 蜜蜂记账的截图监听是否开着（进「智能记账」确认）。\n\n"
+            + "改了配置不生效？\n"
+            + "hook 只在蜜蜂记账启动时注入，点「重启蜜蜂记账」。\n\n"
+            + "截到的图里带控制中心？\n"
+            + "说明这台机器收面板比 0.15 秒慢，把 Const.SHOT_SETTLE_MS 调大。\n\n"
+            + "小部件数字是灰色的？\n"
+            + "蜜蜂记账进程没在跑，显示的是上次的值；打开一次它即可。\n\n"
+            + "能不用打开蜜蜂记账就自动记账吗？\n"
+            + "做不到。它的截图监听挂在界面上，界面被回收就得重新打开一次。"
+            + "（推消息、分享、深链三条路都实测证否。）";
 
     @Override
     protected void onResume() {
@@ -413,53 +346,53 @@ public class SettingsActivity extends Activity {
         }, "bee-status-probe").start();
     }
 
+    /**
+     * 刷新顶部状态。
+     *
+     * <p>只给结论 + 一行事实，不再堆三行解释——细节都进日志和「常见问题」。
+     * 状态点用 M3 语义色：就绪绿、部分可用琥珀、未就绪红。
+     */
     private void refreshStatus() {
         if (statusView == null) {
             return;
         }
-        StringBuilder sb = new StringBuilder();
         boolean a11y = ShotAccessibilityService.isReady();
         boolean root = RootShell.isGranted(this);
 
-        sb.append(a11y ? "✓ 截屏服务已开启（主路径）"
-                : (root ? "○ 截屏服务未开启 · 走 root 兜底，建议开启" : "✗ 截屏服务未开启"));
-        if (!a11y) {
-            sb.append("　← 到「无障碍」里打开「记账截图」会更快");
-        }
-        sb.append("　");
-        sb.append(root ? "✓ root 已授权" : "✗ root 未授权");
-        sb.append('\n');
-
-        if (!hostAnswered) {
-            sb.append("? 未连上蜜蜂记账（它没在运行，或模块未注入）");
-            statusView.setTextColor(Color.parseColor("#A32D2D"));
-        } else if (!a11y && !root) {
-            // 截屏服务没开是最要紧的问题，优先让它红着
-            sb.append("✓ 宿主 hook：").append(hookCount >= 0 ? hookCount + " 条" : "未知");
-            sb.append('\n');
-            sb.append(activityAlive ? "✓ 截图监听在位" : "✗ 截图监听不在位（先打开一次蜜蜂记账）");
-            statusView.setTextColor(Color.parseColor("#A32D2D"));
+        String head;
+        int color;
+        String hint = null;
+        if (!root) {
+            head = "缺少 root";
+            color = Ui.ERROR;
+            hint = "点下面「root 权限」授权后才能截屏";
+        } else if (!hostAnswered) {
+            head = "未连上蜜蜂记账";
+            color = Ui.ERROR;
+            hint = "确认 LSPosed 作用域勾了它，再重启一次";
+        } else if (!activityAlive) {
+            head = "部分可用";
+            color = Ui.WARN;
+            hint = "截图监听不在位，打开一次蜜蜂记账";
         } else {
-            if (hookCount >= 0) {
-                sb.append("✓ 宿主 hook：已装 ").append(hookCount).append(" 条");
-                if (hookFailed > 0) {
-                    sb.append("，失败 ").append(hookFailed).append(" 条");
-                }
-            } else {
-                sb.append("? 宿主 hook：未知");
-            }
-            sb.append('\n');
-            sb.append(activityAlive
-                    ? "✓ 截图监听在位，可以直接用"
-                    : "✗ 截图监听不在位（先打开一次蜜蜂记账）");
-            statusView.setTextColor(activityAlive
-                    ? Color.parseColor("#1D9E75") : Color.parseColor("#A32D2D"));
+            head = "就绪";
+            color = Ui.OK;
         }
-        sb.append('\n').append("宿主包名：").append(HostInfo.pkgResolved()
-                ? HostInfo.pkg() : "探测中…");
-        // 版本号挂在最后一行：标题栏去掉了，不写在这里就再也看不到自己装的是哪一版。
-        sb.append("　·　模块 v").append(versionName());
-        statusView.setText(sb.toString());
+
+        statusView.setText("● " + head + (hint == null ? "" : "\n" + hint));
+        statusView.setTextColor(color);
+
+        if (statusFacts != null) {
+            StringBuilder f = new StringBuilder();
+            f.append("root ").append(root ? "✓" : "✗");
+            f.append(" · hook ").append(hookCount >= 0 ? String.valueOf(hookCount) : "?");
+            if (hookFailed > 0) {
+                f.append("（失败 ").append(hookFailed).append("）");
+            }
+            f.append(" · 无障碍 ").append(a11y ? "✓" : "—");
+            f.append(" · 监听 ").append(activityAlive ? "✓" : "✗");
+            statusFacts.setText(f.toString());
+        }
     }
 
     private String versionName() {
@@ -771,36 +704,4 @@ public class SettingsActivity extends Activity {
 
     // ------------------------------------------------------------ 界面小工具
 
-    private void heading(LinearLayout root, String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(16f);
-        tv.setPadding(0, dp(20), 0, dp(4));
-        root.addView(tv);
-    }
-
-    private void body(LinearLayout root, String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(13.5f);
-        tv.setLineSpacing(dp(3), 1f);
-        tv.setTextColor(Color.parseColor("#444441"));
-        root.addView(tv);
-    }
-
-    private void button(LinearLayout root, String text, View.OnClickListener listener) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setAllCaps(false);
-        b.setOnClickListener(listener);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(8);
-        root.addView(b, lp);
-    }
-
-    private int dp(float v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
-    }
 }
