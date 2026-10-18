@@ -177,27 +177,22 @@ public class SettingsActivity extends Activity {
                     }
                 });
 
-        Ui.switchRow(this, behaviorCard, "日志读不到时兜底", "按「先截先删」推断，可能误删",
-                Prefs.precisePartial(this), new Ui.OnToggle() {
-                    @Override
-                    public void onToggle(boolean on) {
-                        Prefs.setPrecisePartial(SettingsActivity.this, on);
-                        Logx.i("[settings] precise-partial set to " + on);
-                    }
-                });
 
         // ---------------- 提速 ----------------
         LinearLayout speedCard = Ui.card(this, root, "提速");
+        // 相册监听不再是开关：有权限就用快路，没权限自动退回扫描。
+        // 权限只问一次（问过一次就不再打扰），因为用户根本无从判断这个开关该开该关。
         final boolean hasMedia = ShotWatcher.hasPermission(this);
-        Ui.switchRow(this, speedCard, "相册监听", hasMedia ? "已生效" : "需要「读取照片」权限",
-                hasMedia, new Ui.OnToggle() {
-                    @Override
-                    public void onToggle(boolean on) {
-                        requestMediaPermissionIfNeeded();
-                    }
-                });
         if (hasMedia) {
             ShotWatcher.ensureRegistered(this);
+        } else if (!Prefs.mediaAsked(this)) {
+            Prefs.setMediaAsked(this, true);
+            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    requestMediaPermissionIfNeeded();
+                }
+            }, 600L);
         }
 
         TextView bColor = Ui.tonalButton(this, "颜色校准", new View.OnClickListener() {
