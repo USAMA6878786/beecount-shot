@@ -106,6 +106,20 @@ public class SettingsActivity extends Activity {
         // 让磁贴尽早重新绑定（打开设置页是个自然时机）
         ShotTileService.requestRefresh(this);
 
+        // 把宿主加进电池优化白名单：唯一能"让它活得久一点"的温和手段。
+        // 只做一次（成功过一次就不再重复开 su）。
+        if (!Prefs.hostWhitelisted(this)) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    String pkg = HostInfo.pkg(SettingsActivity.this);
+                    if (pkg != null && RootShell.whitelistHost(pkg)) {
+                        Prefs.setHostWhitelisted(SettingsActivity.this, true);
+                    }
+                }
+            }, "bee-whitelist-host").start();
+        }
+
         // 无障碍没开就用 root 帮用户打开（它是第二截屏路径）
         if (!ShotAccessibilityService.isReady()) {
             new Thread(new Runnable() {
