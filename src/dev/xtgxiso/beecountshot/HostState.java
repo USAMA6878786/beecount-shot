@@ -17,6 +17,22 @@ final class HostState {
      * 我们的 hook 在 Application.onCreate 阶段就装好了，早于任何 Activity 创建，
      * 所以不会漏掉第一次 onCreate。
      */
+    /**
+     * 宿主 FlutterEngine 的引用（在 {@code configureFlutterEngine} 里捕获）。
+     *
+     * <p>存成 {@code Object} 而不是 {@code FlutterEngine}：模块编译时**没有 Flutter 依赖**
+     * （只有 android.jar + libxposed），只能靠反射拿类型。全程不直接引用 Flutter 类。
+     */
+    private static volatile Object engine;
+
+    static void setEngine(Object e) {
+        engine = e;
+    }
+
+    static Object engine() {
+        return engine;
+    }
+
     private static volatile boolean activityAlive = false;
 
     private static volatile long aliveSince = 0L;
