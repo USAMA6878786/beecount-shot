@@ -15,7 +15,6 @@ public final class Prefs {
     private static final String KEY_RAW_SWAP = "raw_swap";
     private static final String KEY_NOTIF_ASKED = "notif_asked";
     private static final String KEY_MEDIA_ASKED = "media_asked";
-    private static final String KEY_WHITELISTED = "host_whitelisted";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
@@ -78,13 +77,13 @@ public final class Prefs {
         }
     }
 
-    /** 通知权限问过一次就不再弹（Android 13+）。 */
+    /** 通知权限是否已经问过一次（只问一次，避免反复弹）。 */
     static boolean notifAsked(Context c) {
         try {
             return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_NOTIF_ASKED, false);
+                    .getBoolean(KEY_NOTIF_ASKED, true);
         } catch (Throwable t) {
-            return false;
+            return true;
         }
     }
 
@@ -92,24 +91,6 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putBoolean(KEY_NOTIF_ASKED, v).apply();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** 宿主是否已经加过电池优化白名单（只需成功一次）。 */
-    static boolean hostWhitelisted(Context c) {
-        try {
-            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_WHITELISTED, false);
-        } catch (Throwable t) {
-            return true;
-        }
-    }
-
-    static void setHostWhitelisted(Context c, boolean v) {
-        try {
-            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .edit().putBoolean(KEY_WHITELISTED, v).apply();
         } catch (Throwable ignored) {
         }
     }
