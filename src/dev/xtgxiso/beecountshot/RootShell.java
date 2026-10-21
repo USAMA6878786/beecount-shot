@@ -704,40 +704,6 @@ public final class RootShell {
         return s.length() > 300 ? s.substring(0, 300) + "..." : s;
     }
 
-    /**
-     * 把宿主加入电池优化白名单（root）。
-     *
-     * <p>这是"让它活得久一点"唯一温和且合规的手段：进入 Doze / 后台清理时，
-     * 白名单内的应用不会被挂起或强杀。<b>不能保证不被杀</b>，但能显著降低概率。
-     *
-     * <p>另一个更关键的改进在 {@code BeeShotModule.installObserverKeepAlive}：
-     * 拦住宿主"界面销毁就注销截图观察者"的行为，这样它关掉界面后仍能识别截图。
-     */
-    static boolean whitelistHost(String pkg) {
-        if (pkg == null || pkg.length() == 0) {
-            return false;
-        }
-        try {
-            // 新系统用 cmd deviceidle；老系统退回 dumpsys。两者都幂等，重复执行无副作用。
-            Result r = exec("cmd deviceidle whitelist +" + pkg + " 2>&1", 8000L);
-            if (r.exit == 0) {
-                Logx.i("[root] 宿主已加入电池优化白名单（cmd）");
-                return true;
-            }
-            Result r2 = exec("dumpsys deviceidle whitelist +" + pkg + " 2>&1", 8000L);
-            if (r2.exit == 0) {
-                Logx.i("[root] 宿主已加入电池优化白名单（dumpsys）");
-                return true;
-            }
-            Logx.w("[root] 加白名单失败 exit=" + r.exit + "/" + r2.exit
-                    + " out=" + trim(r.out));
-            return false;
-        } catch (Throwable t) {
-            Logx.w("[root] 加白名单异常：" + t.getMessage());
-            return false;
-        }
-    }
-
     private RootShell() {
     }
 }
