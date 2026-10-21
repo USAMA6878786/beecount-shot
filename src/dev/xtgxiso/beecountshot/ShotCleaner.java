@@ -206,6 +206,16 @@ final class ShotCleaner {
                         }
                         if (answer.processed) {
                             t.confirmed.add(c);
+                        } else if (answer.received && hasExpired(mtime)) {
+                            // 宿主有个硬规则：**超过 30 秒的图一律当旧图跳过**
+                            // （它自己的日志："跳过旧图片 … 超过30秒阈值"）。
+                            // 也就是说这张已经超过阈值了，宿主**永远不会再处理它**——
+                            // 再等 60 秒超时没有任何意义，只会让用户觉得"删得好慢"。
+                            // 这里直接删，把等待从 60 秒压到 30 秒出头。
+                            Logx.w("[clean] 已超宿主 30 秒阈值，判定不会再处理 -> 直接删："
+                                    + RootShell.baseName(c));
+                            doDelete(ctx, c, 0L);
+                            t.handled.add(c);
                         }
                     }
                 }
@@ -285,6 +295,23 @@ final class ShotCleaner {
         } catch (Throwable t) {
             Logx.w("[clean] 探测宿主失败：" + t.getMessage());
         }
+    }
+
+    /**
+     * 这张图是否已经超过宿主的"旧图阈值"。
+     *
+     * <p>蜜蜂记账里有个硬规则：观察者收到通知时，若图片**年龄超过 30 秒**就整张跳过
+     * （它的日志：`跳过旧图片 … (年龄=49秒，超过30秒阈值)`）。
+     * 一旦过了这个点，它**永远不会再处理这张图**——所以不必再等我们自己的 60 秒超时。
+     *
+     * <p>取 31 秒留 1 秒余量，避免和它的判定在边界上打架；解析不出时间（返回 0）时
+     * 一律返回 false，保持保守。
+     */
+    private static boolean hasExpired(long fileTime) {
+        if (fileTime <= 0L) {
+            return false;
+        }
+        return System.currentTimeMillis() - fileTime > 31000L;
     }
 
     /**
