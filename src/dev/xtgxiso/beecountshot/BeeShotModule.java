@@ -116,6 +116,7 @@ public class BeeShotModule extends XposedModule {
             installApplicationContextHook(cl, param);
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
+            installObserverKeepAlive(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -387,6 +388,55 @@ public class BeeShotModule extends XposedModule {
                 // Dart isolate 还在，观察者继续工作。所以这行只说明"界面没了"，不再断言监听掉了。
                 Logx.w("[host] MainActivity.onDestroy -> 界面销毁（引擎保活生效则监听仍在位）");
                 return chain.proceed();
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- 观察者保活
+
+    /**
+     * 阻止「界面销毁时注销截图观察者」。
+     *
+     * <h3>为什么这个能解决"必须停在前台"</h3>
+     * 宿主 {@code MainActivity.onDestroy()} 会主动调 {@code stopScreenshotObserver()}
+     * 把 ContentObserver 注销掉。但实测（详见项目记忆）：
+     * <b>{@code FlutterEngine.destroy()} 从未被调用</b> —— 引擎不随界面销毁，
+     * Dart isolate 还活着、MethodChannel 的对端也还在。
+     *
+     * <p>也就是说：界面关掉之后它**本来还有能力继续识别截图**，只是自己先把耳朵摘了。
+     * 这里把那次注销拦下来（不执行原方法），于是：
+     * <pre>
+     *   打开一次蜜蜂记账 → 按 Home 关掉界面 → 观察者仍挂着、Dart 仍在跑
+     *   → 之后点磁贴照常记账，不需要再开
+     * </pre>
+     *
+     * <h3>为什么拦截不会造成重复记账</h3>
+     * 重复注册的观察者会对同一张图各触发一次 onChange，但宿主自己按**路径**去重
+     * （Kotlin 侧 {@code processedPaths} + Dart 侧"截图已处理过，跳过"），
+     * 同一路径只会被处理一次。
+     *
+     * <h3>兜底</h3>
+     * 方法找不到（上游改名）就跳过、行为退回现状——**宁可回到"要开一次"，也不能搞坏它**。
+     */
+    private void installObserverKeepAlive(ClassLoader cl) {
+        Method stop = null;
+        try {
+            Class<?> activity = Class.forName(Const.HOST_PKG + ".MainActivity", false, cl);
+            stop = findMethod(activity, "stopScreenshotObserver", new Class<?>[0]);
+        } catch (Throwable t) {
+            Logx.e("[hook] stopScreenshotObserver lookup failed", t);
+        }
+        if (stop == null) {
+            Logx.w("[hook] 找不到 stopScreenshotObserver；截图监听仍会随界面销毁而注销");
+        }
+        add("observer-keep-alive", stop, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                Logx.i("[hook] 拦下 stopScreenshotObserver：界面销毁不再注销截图观察者");
+                // onDestroy 探针刚把它标成"不在位"，这里改回来——因为监听实际上还在。
+                // （HostState.activityAlive 在语义上就是"截图监听是否在位"，副标题也用它。）
+                HostState.onActivityCreated();
+                return null;
             }
         });
     }
