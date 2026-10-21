@@ -116,6 +116,7 @@ public class BeeShotModule extends XposedModule {
             installApplicationContextHook(cl, param);
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
+            installEngineCapture(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -385,14 +386,64 @@ public class BeeShotModule extends XposedModule {
                 HostState.onActivityDestroyed();
                 // 注意：装了"引擎保活"之后，界面销毁**不等于**监听失效——
                 // Dart isolate 还在，观察者继续工作。所以这行只说明"界面没了"，不再断言监听掉了。
-                Logx.w("[host] MainActivity.onDestroy -> 界面销毁（引擎保活生效则监听仍在位）");
-                return chain.proceed();
+                Logx.w("[host] MainActivity.onDestroy -> 界面销毁");
+                Object r = chain.proceed();
+                // 宿主刚刚在 onDestroy 里把观察者注销了。但引擎和 Dart 都还活着
+                // （实测 FlutterEngine.destroy 从未被调用），所以立刻用它的
+                // startScreenshotObserver(engine) 挂回去 —— 这样下一次点磁贴时
+                // 观察者是在位的，通知能及时到，不会因为超过 30 秒被判"旧图"丢掉。
+                HostRearm.afterDestroy(chain.getThisObject());
+                return r;
             }
         });
     }
 
 
 
+
+    // ---------------------------------------------------------------- 引擎捕获
+
+    /**
+     * 捕获宿主的 {@code FlutterEngine}，供 {@link HostRearm} 重挂观察者时使用。
+     *
+     * <p>{@code MainActivity.configureFlutterEngine(FlutterEngine)} 是宿主自己实现的
+     * （它在这里注册了日志通道、截图通道等）。我们只取参数、不改行为。
+     *
+     * <p>用反射按"方法名 + 1 个参数"找，**不直接引用 Flutter 类**——模块编译时没有 Flutter 依赖。
+     */
+    private void installEngineCapture(ClassLoader cl) {
+        Method cfg = null;
+        try {
+            Class<?> act = Class.forName(Const.HOST_PKG + ".MainActivity", false, cl);
+            Method[] all = act.getDeclaredMethods();
+            for (int i = 0; i < all.length; i++) {
+                Method m = all[i];
+                if ("configureFlutterEngine".equals(m.getName())
+                        && m.getParameterTypes().length == 1) {
+                    m.setAccessible(true);
+                    cfg = m;
+                    break;
+                }
+            }
+        } catch (Throwable t) {
+            Logx.e("[hook] configureFlutterEngine lookup failed", t);
+        }
+        add("engine-capture", cfg, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object[] args = chain.getArgs().toArray();
+                    if (args.length > 0 && args[0] != null) {
+                        HostState.setEngine(args[0]);
+                        Logx.i("[hook] 已捕获 FlutterEngine（供重挂观察者用）");
+                    }
+                } catch (Throwable t) {
+                    Logx.w("[hook] 捕获 engine 失败：" + t.getMessage());
+                }
+                return chain.proceed();
+            }
+        });
+    }
 
     // ---------------------------------------------------------------- 热重载
 
