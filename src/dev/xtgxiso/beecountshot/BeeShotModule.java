@@ -411,7 +411,7 @@ public class BeeShotModule extends XposedModule {
      *
      * <p>用反射按"方法名 + 1 个参数"找，**不直接引用 Flutter 类**——模块编译时没有 Flutter 依赖。
      */
-    private void installEngineCapture(ClassLoader cl) {
+    private void installEngineCapture(final ClassLoader cl) {
         Method cfg = null;
         try {
             Class<?> act = Class.forName(Const.HOST_PKG + ".MainActivity", false, cl);
