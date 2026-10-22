@@ -117,6 +117,7 @@ public class BeeShotModule extends XposedModule {
             installActivityContextHook(cl);
             installActivityLifecycleProbe(cl);
             installEngineCapture(cl);
+            installDartLogTap(cl);
 
             String summary = "ok=" + installed + " failed=" + failedList;
             Logx.i("[module] install summary: " + summary);
@@ -190,9 +191,12 @@ public class BeeShotModule extends XposedModule {
                     return chain.proceed();
                 }
                 String path = String.valueOf(chain.getArg(1));
-                if (!ArmSignal.consume(path)) {
+                // 纯 headless 模式：只有**我们自己**（无界面引擎）发的派发放行。
+                // 宿主自己的观察者也走这个方法，但那条路会让"谁先派发谁记账"变得不确定，
+                // 所以一律拦掉 —— 记账只由我们这一条路完成。
+                if (!HostHeadlessEngine.isOurChannel(chain.getThisObject())) {
                     HostTelemetry.bump("channel_blocked");
-                    Logx.i("[gate-channel] BLOCKED a screenshot report (no pass / duplicate)");
+                    Logx.i("[gate-channel] BLOCKED host observer report (headless-only mode)");
                     return null;
                 }
                 // 就地记下"闸门放行了哪个文件"——这是后续判断"这张图被交给蜜蜂记账了"
@@ -300,7 +304,7 @@ public class BeeShotModule extends XposedModule {
      * <p>宿主的 Application 类名从 applicationInfo 里拿，是明面上的信息（Flutter 应用一般是
      * io.flutter.app.FlutterApplication，也可能被换成自定义类），不需要猜。
      */
-    private void installApplicationContextHook(ClassLoader cl,
+    private void installApplicationContextHook(final ClassLoader cl,
                                                XposedModuleInterface.PackageReadyParam param) {
         Method onCreate = null;
         try {
@@ -321,6 +325,41 @@ public class BeeShotModule extends XposedModule {
                     Object self = chain.getThisObject();
                     if (self instanceof Context) {
                         HostBridge.attach((Context) self);
+                        registerHeadlessReceiver((Context) self, cl);
+                        // 模块侧刚把我们拉起来？（拉起前会留一个标记文件）
+                        // 有标记就说明"这次启动是来干活的"——立刻起无界面引擎。
+                        // 放在 Application.onCreate 里检查，**没有时序窗口**。
+                        Context appCtx = (Context) self;
+                        java.io.File mark = new java.io.File(appCtx.getCacheDir(), "beeshot_boot");
+                        if (mark.exists()) {
+                            // 界面引擎已经在的话就别再起第二个 —— 那时它的观察者会处理这张图，
+                            // 我们再起一个就是双份内存 + 有重复记账的风险。
+                            if (HostState.engine() != null) {
+                                Logx.i("[headless] 界面引擎已在，跳过无界面引擎");
+                                //noinspection ResultOfMethodCallIgnored
+                                mark.delete();
+                                return chain.proceed();
+                            }
+                            // 界面引擎已经在的话就别再起第二个 —— 那时它的观察者会处理这张图，
+                            // 我们再起一个就是双份内存 + 有重复记账的风险。
+                            if (HostState.engine() != null) {
+                                Logx.i("[headless] 界面引擎已在，跳过无界面引擎");
+                                //noinspection ResultOfMethodCallIgnored
+                                mark.delete();
+                                return chain.proceed();
+                            }
+                            // 只认 10 秒内的标记：桌面小组件随时会唤醒进程，
+                            // 一个过期标记会让用户正常打开 App 时也白起一个引擎。
+                            long ageMs = System.currentTimeMillis() - mark.lastModified();
+                            //noinspection ResultOfMethodCallIgnored
+                            mark.delete();
+                            if (ageMs <= 10_000L) {
+                                Logx.i("[headless] 发现拉起标记（" + ageMs + "ms），开始起无界面引擎");
+                                HostHeadlessEngine.boot(appCtx, cl, null);
+                            } else {
+                                Logx.i("[headless] 标记已过期（" + ageMs + "ms），忽略");
+                            }
+                        }
                     }
                 } catch (Throwable t) {
                     Logx.e("[hook] attach application context failed", t);
@@ -400,6 +439,89 @@ public class BeeShotModule extends XposedModule {
 
 
 
+
+    // ---------------------------------------------------------------- Dart 日志截流
+
+    /**
+     * 把 Dart 的 {@code print()} 截到我们自己的日志文件里。
+     *
+     * <h3>为什么需要</h3>
+     * Dart 的 print 只走 logcat 的 {@code flutter} tag，而这台机器 logcat 刷得极快，
+     * 事后导出永远看不到。排查 headless 的问题时**完全看不见 Dart 内部**。
+     *
+     * <p>Flutter 的 print 最终会走到 {@code FlutterJNI.logMessage(tag, message, level)}
+     * （native 反向调 Java）。挂上它，就能把 Dart 的每一条输出落进宿主日志。
+     */
+    private void installDartLogTap(ClassLoader cl) {
+        Method m = null;
+        try {
+            Class<?> jni = Class.forName("io.flutter.embedding.engine.FlutterJNI", false, cl);
+            m = findMethod(jni, "logMessage",
+                    new Class<?>[]{String.class, String.class, int.class});
+        } catch (Throwable t) {
+            Logx.w("[hook] 找 FlutterJNI.logMessage 失败：" + t.getMessage());
+        }
+        add("dart-log", m, new XposedInterface.Hooker() {
+            @Override
+            public Object intercept(XposedInterface.Chain chain) throws Throwable {
+                try {
+                    Object[] a = chain.getArgs().toArray();
+                    String tag = a.length > 0 && a[0] != null ? String.valueOf(a[0]) : "?";
+                    String msg = a.length > 1 && a[1] != null ? String.valueOf(a[1]) : "";
+                    if (msg.length() > 300) {
+                        msg = msg.substring(0, 300) + "…";
+                    }
+                    Logx.i("[dart] " + tag + " | " + msg);
+                } catch (Throwable ignored) {
+                }
+                return chain.proceed();
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------- 无界面派发
+
+    /**
+     * 注册一个**动态**接收器：模块侧把进程拉起来之后，用它通知我们
+     * "起一个无界面引擎，把刚截的那张图派发进去"。
+     *
+     * <p>为什么是动态的：它只在进程活着时存在，正好符合"要用它的时候才需要它"；
+     * 而且动态接收器不受 Android 8+ 对后台**隐式广播**的限制。
+     *
+     * <p>什么时候不干活：界面引擎已经在（{@link HostState#engine()} 非空）→ 说明界面活着，
+     * 那张图会被它自己的观察者看到，我们再派发就会**记两笔账**。
+     */
+    private void registerHeadlessReceiver(final Context ctx, final ClassLoader hostCl) {
+        try {
+            android.content.IntentFilter f =
+                    new android.content.IntentFilter(Const.ACTION_HEADLESS);
+            android.content.BroadcastReceiver r = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, android.content.Intent intent) {
+                    try {
+                        // 纯 headless 模式：界面引擎在也照样起我们自己的引擎。
+                        // 闸门已经按 messenger 把"宿主观察者的派发"全拦了，
+                        // 不会再出现双派发；这里再挡反而会让界面活着时完全没人派发。
+                        if (HostHeadlessEngine.uiEnginePresent()) {
+                            Logx.i("[headless] 界面引擎在，但按纯 headless 模式仍由我们派发");
+                        }
+                        Logx.i("[headless] 收到派发请求，开始起无界面引擎");
+                        HostHeadlessEngine.boot(c, hostCl, null);
+                    } catch (Throwable t) {
+                        Logx.e("[headless] 派发请求处理失败", t);
+                    }
+                }
+            };
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                ctx.registerReceiver(r, f, Context.RECEIVER_EXPORTED);
+            } else {
+                ctx.registerReceiver(r, f);
+            }
+            Logx.i("[hook] 已注册无界面派发接收器");
+        } catch (Throwable t) {
+            Logx.w("[hook] 注册无界面派发接收器失败：" + t.getMessage());
+        }
+    }
 
     // ---------------------------------------------------------------- 引擎捕获
 
