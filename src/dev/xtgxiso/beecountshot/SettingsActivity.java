@@ -302,7 +302,7 @@ public class SettingsActivity extends Activity {
             + "改了配置不生效？\n"
             + "hook 只在蜜蜂记账启动时注入，点「重启蜜蜂记账」。\n\n"
             + "截到的图里带控制中心？\n"
-            + "说明这台机器收面板比 0.15 秒慢，把 Const.SHOT_SETTLE_MS 调大。\n\n"
+            + "说明这台机器收面板太慢。把 Const.SHOT_SETTLE_MS 从 0 改成 100~200 即可。\n\n"
             + "小部件数字是灰色的？\n"
             + "蜜蜂记账进程没在跑，显示的是上次的值；打开一次它即可。\n\n"
             + "能不用打开蜜蜂记账就自动记账吗？\n"
