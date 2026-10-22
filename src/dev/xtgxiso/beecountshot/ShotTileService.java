@@ -265,12 +265,13 @@ public class ShotTileService extends TileService {
                         // 按键注入、跟面板状态无关，等待就没有存在理由了。
                         //
                         // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
-                        // 收面板命令已经发出，再等一小会儿让下层界面画干净——
-                        // 否则会拍到"控制中心刚收起、下层还在过渡/模糊"的那一帧。
-                        // 见 Const.SHOT_SETTLE_MS。
-                        try {
-                            Thread.sleep(Const.SHOT_SETTLE_MS);
-                        } catch (InterruptedException ignored) {
+                        // 收面板命令返回后问一下要不要再等一下（见 Const.SHOT_SETTLE_MS）。
+                        // 现在是 0 —— 收面板命令一返回就抓帧，最快。
+                        if (Const.SHOT_SETTLE_MS > 0L) {
+                            try {
+                                Thread.sleep(Const.SHOT_SETTLE_MS);
+                            } catch (InterruptedException ignored) {
+                            }
                         }
                         final boolean a11yReady = ShotAccessibilityService.isReady();
                         Logx.i("[tile] 截屏（收面板后等了 " + Const.SHOT_SETTLE_MS + "ms）a11y=" + a11yReady);
