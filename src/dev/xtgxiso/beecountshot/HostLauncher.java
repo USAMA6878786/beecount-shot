@@ -58,11 +58,17 @@ final class HostLauncher {
             return false;
         }
         try {
-            // 点名发给它的小组件 provider。action 用标准的 APPWIDGET_UPDATE；
-            // provider 收到后未必做什么事（我们只关心"进程被创建"）。
-            String cmd = "am broadcast -n " + pkg + "/.BeeCountWidgetProvider"
+            // 一次 su 里做两件事：进程已经活着就 exit 3 直接跳过（省掉一次无用广播），
+            // 否则点名发给它的小组件 provider。provider 收到后未必做什么事
+            // —— 我们只关心"进程被创建"。
+            String cmd = "(pidof " + pkg + " >/dev/null 2>&1 && exit 3); "
+                    + "am broadcast -n " + pkg + "/.BeeCountWidgetProvider"
                     + " -a android.appwidget.action.APPWIDGET_UPDATE";
             RootShell.Result r = RootShell.exec(cmd, 8000L);
+            if (r.exit == 3) {
+                Logx.i("[launch] 进程本来就在，跳过");
+                return false;
+            }
             Logx.i("[launch] 广播已发出 exit=" + r.exit + " out=" + trim(r.out));
             return r.exit == 0;
         } catch (Throwable t) {
