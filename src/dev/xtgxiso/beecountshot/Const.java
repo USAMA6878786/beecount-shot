@@ -47,6 +47,9 @@ public final class Const {
     /** 放行时一并告诉宿主"要不要删图"，否则它关着开关也照删。 */
     public static final String EXTRA_AUTO_DELETE = "auto_delete";
 
+    /** 模块 → 宿主进程：起无界面引擎并派发一张截图。 */
+    public static final String ACTION_HEADLESS = "dev.xtgxiso.beecountshot.HEADLESS";
+
     /** 模块 App 的包名（宿主回广播时用）。 */
     public static final String MODULE_PKG = "dev.xtgxiso.beecountshot";
 
