@@ -85,13 +85,12 @@ public class ShotTileService extends TileService {
                 try {
                     ShotBridge.Answer a = ShotBridge.query(
                             getApplicationContext(), "", 2500L);
-                    if (!a.received) {
-                        applyTileFromProbe("蜜蜂记账未运行", Tile.STATE_INACTIVE);
-                    } else if (a.activityAlive) {
-                        applyTileFromProbe("已就绪 · 点一下截屏记账", Tile.STATE_INACTIVE);
-                    } else {
-                        applyTileFromProbe("未就绪 · 先打开一次蜜蜂记账", Tile.STATE_UNAVAILABLE);
-                    }
+                    // 走 headless 之后，蜜蜂记账在不在运行与能不能记账无关 ——
+                    // 点一下我们会自己把进程拉起来、自己起引擎派发。
+                    // 所以磁贴永远是可用状态，不再因为没连上而变灰或提示先打开。
+                    applyTileFromProbe(a.received
+                            ? "点一下截屏记账"
+                            : "点一下截屏记账 · 会自动唤醒蜜蜂记账", Tile.STATE_ACTIVE);
                 } catch (Throwable t) {
                     Logx.w("[tile] status probe failed: " + t.getMessage());
                 }
@@ -183,6 +182,7 @@ public class ShotTileService extends TileService {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
+                    // pullUp 内部已经把"拉起 → 等接收器就绪 → 派发（含补发）"串起来了
                     HostLauncher.pullUp(launchCtx);
                 }
             }, "bee-launch-host").start();
