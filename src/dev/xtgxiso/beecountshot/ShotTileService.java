@@ -176,6 +176,18 @@ public class ShotTileService extends TileService {
         Logx.init(Prefs.appLogPath(app));
         Logx.i("[tile] ===== clicked =====");
 
+        // 顺手确认宿主进程还在：不在就用它的 widget provider 广播把它叫回来。
+        // **并行**做，不挡截图；等图片写进相册、宿主检测到的时候，进程通常已经起来了。
+        final Context launchCtx = app;
+        if (launchCtx != null) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    HostLauncher.pullUp(launchCtx);
+                }
+            }, "bee-launch-host").start();
+        }
+
         // 立刻把"收到了"画在磁贴上。这一步专门用来把两种"点了没反应"区分开：
         //   副标题变了     → 点击送到了磁贴服务，问题在后面的截屏/记账环节；
         //   副标题纹丝不动 → 这一下压根没送到（应用刚覆盖安装完、磁贴还没重新绑定时会这样，
