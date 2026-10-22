@@ -347,6 +347,30 @@ final class ShotCleaner {
         return true;
     }
 
+    /**
+     * 无界面路径专用：Dart 回执成功之后删掉这张图。
+     *
+     * <p>为什么需要：headless 下它确实把账记上了，但**没有写我们依赖的那条
+     * 「AI 识别 + 落库完成」日志**，所以按日志配对的清理器永远等不到结果、
+     * 图就一直留着。这里改成"以 Dart 的回执为准"。
+     *
+     * <p>仍然尊重设置页的「识别后删除截图」开关。
+     */
+    static void deleteAfterHeadless(Context ctx, String path) {
+        try {
+            if (ctx == null || path == null || path.length() == 0) {
+                return;
+            }
+            if (!Prefs.autoDelete(ctx)) {
+                Logx.i("[clean] 自动删图关着，保留：" + RootShell.baseName(path));
+                return;
+            }
+            doDelete(ctx, path, 0L);
+        } catch (Throwable t) {
+            Logx.e("[clean] 无界面路径删图失败", t);
+        }
+    }
+
     private static void doDelete(Context ctx, String path, long successTs) {
         Logx.i("[clean] deleting " + path + " (success ts=" + successTs + ")");
         boolean ok = RootShell.deleteFile(path);
