@@ -394,17 +394,14 @@ public class SettingsActivity extends Activity {
             head = "正在重启蜜蜂记账";
             color = Ui.WARN;
             hint = "几秒后自动刷新";
-        } else if (!hostAnswered) {
-            head = "未连上蜜蜂记账";
-            color = Ui.ERROR;
-            hint = "确认 LSPosed 作用域勾了它，再重启一次";
-        } else if (!activityAlive) {
-            head = "部分可用";
-            color = Ui.WARN;
-            hint = "截图监听不在位，打开一次蜜蜂记账";
         } else {
+            // 走 headless 之后，蜜蜂记账是否在运行、截图监听是否在位，都不再是前提：
+            // 点磁贴时我们会自己拉起进程、自己起引擎派发。只要 root 有了就算就绪。
             head = "就绪";
             color = Ui.OK;
+            if (!a11y) {
+                hint = "无障碍没开（可选，只作备用截屏路径）";
+            }
         }
 
         statusView.setText("● " + head + (hint == null ? "" : "\n" + hint));
@@ -413,12 +410,9 @@ public class SettingsActivity extends Activity {
         if (statusFacts != null) {
             StringBuilder f = new StringBuilder();
             f.append("root ").append(root ? "✓" : "✗");
-            f.append(" · hook ").append(hookCount >= 0 ? String.valueOf(hookCount) : "?");
-            if (hookFailed > 0) {
-                f.append("（失败 ").append(hookFailed).append("）");
-            }
-            f.append(" · 无障碍 ").append(a11y ? "✓" : "—");
-            f.append(" · 监听 ").append(activityAlive ? "✓" : "✗");
+            // headless 之后，"hook 装了几个""监听在不在位"都不再影响能不能记账
+            // （点磁贴会自己拉起进程、自己起引擎派发），只保留对用户有意义的两项。
+            f.append(" · 无障碍 ").append(a11y ? "✓" : "—（可选）");
             statusFacts.setText(f.toString());
         }
     }
