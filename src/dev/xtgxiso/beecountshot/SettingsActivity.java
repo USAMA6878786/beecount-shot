@@ -331,6 +331,22 @@ public class SettingsActivity extends Activity {
                         activityAlive = a.activityAlive;
                         hookCount = a.hookCount;
                         hookFailed = a.hookFailed;
+                    } else if (HostLauncher.pullUp(SettingsActivity.this)) {
+                        // 宿主进程不在 —— 用它的"桌面小组件 provider"广播叫回来。
+                        // 这不显示任何界面，只是让进程活着（小组件恢复实时、状态点变绿）。
+                        try {
+                            Thread.sleep(2500L);
+                        } catch (InterruptedException ignored) {
+                        }
+                        ShotBridge.Answer a2 = ShotBridge.query(
+                                getApplicationContext(), "", 3000L);
+                        if (a2.received) {
+                            hostAnswered = true;
+                            activityAlive = a2.activityAlive;
+                            hookCount = a2.hookCount;
+                            hookFailed = a2.hookFailed;
+                            Logx.i("[launch] 进程已被广播拉起，状态恢复");
+                        }
                     }
                 } catch (Throwable ignored) {
                 }
