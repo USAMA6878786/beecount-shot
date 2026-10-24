@@ -90,11 +90,6 @@ final class HostInfo {
         return v != null ? v : PKG_CANDIDATES[0];
     }
 
-    /** 是否已经真的跑过 root 探测（设置页显示"探测中…"用）。 */
-    static boolean pkgResolved() {
-        return probed;
-    }
-
     private static String probePkg() {
         try {
             RootShell.Result r = RootShell.exec(
