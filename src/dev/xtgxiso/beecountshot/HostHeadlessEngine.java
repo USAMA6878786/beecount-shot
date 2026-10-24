@@ -76,9 +76,6 @@ final class HostHeadlessEngine {
     private static volatile String inflight;
 
 
-    /** 同一张图重发了几次（识别卡死时用来重试）。 */
-    private static volatile int dispatchAttempts = 0;
-
     /** 界面引擎出现时有活在飞，等回执完再撤。 */
     private static volatile boolean yieldPending;
 
@@ -86,6 +83,21 @@ final class HostHeadlessEngine {
     private static volatile String cleanedPath;
 
     private static volatile String lastDispatched;
+
+    /**
+     * 已经派发过的截图路径（最近若干张）。
+     *
+     * <p>为什么不能只靠 {@link #lastDispatched}：模块侧为了让广播穿过冻结窗口，
+     * 会把**同一条派发广播重发 3 次**。若两次重发之间已经派发了别的图，
+     * `lastDispatched` 就换人了，迟到的重发会被当成"新图"再派一次
+     * —— 实测 8 次点击产生 20 次派发，同一张图被 AI 重复识别。
+     * 所以这里留一份"派发历史"，同路径只认一次。
+     */
+    private static final java.util.LinkedHashSet<String> DISPATCHED_HISTORY =
+            new java.util.LinkedHashSet<String>();
+
+    /** 派发历史最多记多少张（超过就丢最早的，控制内存）。 */
+    private static final int DISPATCHED_HISTORY_MAX = 32;
 
     /** 应用 Context，删图时要用。 */
     private static volatile Context appCtx;
@@ -163,21 +175,22 @@ final class HostHeadlessEngine {
      * @param path 要派发的截图路径；null 表示只启动不派发
      */
     static void boot(final Context ctx, final ClassLoader hostCl, final String path) {
+        // **必须入队，不能只写 pendingPath**：连点时（0.3~1 秒一张）多次 boot 会互相覆盖
+        // 同一个 pendingPath，等 1.2 秒后真正派发时只剩最后一张，前面的被静默丢掉
+        // （实测连点 6 次只派发 5 张，233804 那张彻底没识别）。
         if (path != null) {
-            pendingPath = path;
+            enqueue(path);
         }
         if (started) {
-            // 已经在跑。
-            // 注意：**不能立刻 dispatchNow()** —— 上一次的图刚被删，新的还没写完，
-            // newestShot() 会取到旧路径、被 lastDispatched 判重跳过，表现为"第二次点了没反应"。
-            // 所以延迟一下再派发，并允许重试。
+            // 已经在跑。文件在模块侧"已写入相册"之后才发请求，已经落盘，
+            // 所以只留很短的延迟（让上一次的写盘/相册插入完成），然后从队列取下一张。
             lastActivityAt = System.currentTimeMillis();
             new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    attemptDispatch(0);
+                    drainQueue();
                 }
-            }, 1200L);
+            }, 400L);
             return;
         }
         started = true;
@@ -296,7 +309,7 @@ final class HostHeadlessEngine {
                                 new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                                     @Override
                                     public void run() {
-                                        dispatchNow();
+                                        drainQueue();
                                     }
                                 }, 250L);
                             }
@@ -314,42 +327,6 @@ final class HostHeadlessEngine {
 
     /** 把 pendingPath 派发给 Dart。 */
     /** 找最新的一张本模块截图（路径没传进来时用）。 */
-    /**
-     * 卡死检测：派发后 12 秒还没回执，就认为这次请求废了（比如被系统掐断连接），
-     * **清掉 inflight 并重发一次**。
-     *
-     * <p>为什么重发有用：Dart 那边卡住的是**那一次 Future**，我们再次
-     * {@code onScreenshotDetected} 会走一条全新的处理流程、发一条全新的连接 ——
-     * 如果系统是"周期性给窗口"，重试就可能赶上。
-     *
-     * <p>最多重试 2 次（共 3 次机会），之后交给兜底删图。
-     */
-    private static void scheduleStallCheck(final String path) {
-        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    if (!path.equals(inflight)) {
-                        return;   // 已经回了，正常
-                    }
-                    if (dispatchAttempts >= 2) {
-                        Logx.w("[headless] 已重试 2 次仍无回执，放弃（交给兜底删图）");
-                        return;
-                    }
-                    dispatchAttempts++;
-                    Logx.w("[headless] 12 秒无回执，清掉 inflight 并重发（第 "
-                            + dispatchAttempts + " 次重试）");
-                    inflight = null;
-                    lastDispatched = null;
-                    pendingPath = path;
-                    dispatchNow();
-                } catch (Throwable t) {
-                    Logx.w("[headless] 卡死检测失败：" + t.getMessage());
-                }
-            }
-        }, 12_000L);
-    }
-
     /**
      * 空闲检查：每 {@link #IDLE_CHECK_MS} 看一次，超过 {@link #IDLE_DESTROY_MS} 没活干就销毁。
      *
@@ -433,7 +410,13 @@ final class HostHeadlessEngine {
      * 最多试 3 次，总共约 3.6 秒。
      */
     private static void attemptDispatch(final int attempt) {
-        String newest = pendingPath != null ? pendingPath : newestShot();
+        // 不再 newestShot 兜底（同 dispatchNow 的理由：连点时取最新会取错、丢图）。
+        // 没有明确 pendingPath 就说明"只被要求启动引擎、还没指定派发哪张"，直接等。
+        if (pendingPath == null) {
+            Logx.i("[headless] 还没有明确路径，等指定路径派发");
+            return;
+        }
+        String newest = pendingPath;
         if (newest != null && newest.equals(lastDispatched)) {
             // 这张已经派发过：
             //  - 还在处理中 → 说明是同一次点击的重复触发，直接忽略（不空转）
@@ -488,26 +471,60 @@ final class HostHeadlessEngine {
     private static final java.util.ArrayDeque<String> QUEUE = new java.util.ArrayDeque<String>();
 
     /** 队列上限。真排到这个数说明识别已经严重跟不上，多留也没意义。 */
-    private static final int QUEUE_MAX = 6;
+    private static final int QUEUE_MAX = 12;
 
-    private static void dispatchNow() {
+    /**
+     * 把一张要派发的图放进队列（去重）。
+     *
+     * <p>去重有两个来源：已经派发过的（{@link #DISPATCHED_HISTORY}）不再放；
+     * 队列里已有的不重复放（模块侧的补发广播会重复请求同一张）。
+     */
+    private static void enqueue(String path) {
+        if (path == null || path.length() == 0) {
+            return;
+        }
+        synchronized (QUEUE) {
+            if (DISPATCHED_HISTORY.contains(path) || QUEUE.contains(path)) {
+                return;
+            }
+            while (QUEUE.size() >= QUEUE_MAX) {
+                String dropped = QUEUE.pollFirst();
+                Logx.w("[headless] 队列满了，丢掉最早的一张：" + RootShell.baseName(dropped));
+            }
+            QUEUE.addLast(path);
+        }
+    }
+
+    /** 从队列取下一张派发（手上没有明确目标时才取）。 */
+    private static void drainQueue() {
         if (pendingPath == null) {
-            pendingPath = newestShot();
-            if (pendingPath != null) {
-                Logx.i("[headless] 未指定路径，取最新截图：" + RootShell.baseName(pendingPath));
+            synchronized (QUEUE) {
+                pendingPath = QUEUE.pollFirst();
             }
         }
+        if (pendingPath == null) {
+            Logx.i("[headless] 队列空，等下一次派发请求");
+            return;
+        }
+        attemptDispatch(0);
+    }
+
+    private static void dispatchNow() {
+        // 不再用 newestShot() 兜底取图：连点时上一张图还没删，newestShot 会取错——
+        // 要么取到上一张（被 lastDispatched 判重跳过、本次图漏掉），要么重复排队。
+        // 现在截图成功后会走"指定路径派发"（见 ShotTileService），路径一定给到，
+        // 所以这里只在 pendingPath 明确时才派发；null 说明还没有明确目标，直接等。
         String path = pendingPath;
         Object mc = channel;
         if (path == null || mc == null) {
-            Logx.w("[headless] 还没东西可派发（path=" + path + " channel=" + (mc != null) + "）");
+            Logx.w("[headless] 还没有明确路径可派发（path=" + path + " channel=" + (mc != null) + "）");
             return;
         }
         if (!dartReady) {
             Logx.w("[headless] Dart 还没就绪，等它 enable 完成");
             return;
         }
-        if (path.equals(lastDispatched)) {
+        if (path.equals(lastDispatched) || DISPATCHED_HISTORY.contains(path)) {
             Logx.i("[headless] 这张已经派发过，跳过（防重复记账）");
             pendingPath = null;
             return;
@@ -529,8 +546,15 @@ final class HostHeadlessEngine {
             return;
         }
         final String dispatchPath = path;
-        dispatchAttempts = 0;
         lastDispatched = path;
+        synchronized (DISPATCHED_HISTORY) {
+            DISPATCHED_HISTORY.add(path);
+            while (DISPATCHED_HISTORY.size() > DISPATCHED_HISTORY_MAX) {
+                java.util.Iterator<String> it = DISPATCHED_HISTORY.iterator();
+                it.next();
+                it.remove();
+            }
+        }
         dispatchedPath = path;
         inflight = path;
         lastActivityAt = System.currentTimeMillis();
@@ -632,7 +656,11 @@ final class HostHeadlessEngine {
             mc.getClass().getMethod("invokeMethod", String.class, Object.class, resultCls)
                     .invoke(mc, "onScreenshotDetected", path, cb);
             Logx.i("[headless] 已派发截图（等 Dart 回调）：" + RootShell.baseName(path));
-            scheduleStallCheck(path);
+
+            // 不再做"12 秒无回执就重发"：重发会让同一张图被 Dart 处理两次，
+            // 第二次时它内部状态已乱、抛异常 → 蜜蜂记账弹「识别失败」通知（实测连点时出现）。
+            // 现在有 binder 续命解冻，识别不会卡死；即便真卡死，下面的 20 秒兜底删图
+            // 也会把图清掉、不留残留，所以重试已经没有必要了。
 
             // 兜底：20 秒内没收到回执也照样删（AI 通常 6~10 秒，20 秒足够）。
             // 政策是"磁贴截的图最终都要删"，不管有没有记成账——
