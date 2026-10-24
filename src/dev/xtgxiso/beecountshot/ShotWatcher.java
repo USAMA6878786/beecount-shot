@@ -1,7 +1,6 @@
 package dev.xtgxiso.beecountshot;
 
 import android.content.ContentResolver;
-import android.content.ContentUris;
 import android.content.Context;
 import android.database.ContentObserver;
 import android.database.Cursor;
@@ -111,12 +110,6 @@ final class ShotWatcher {
             ready = false;
             Logx.w("[shotwatch] 连续 " + n + " 次没收到相册通知，本进程内退回 su 轮询");
         }
-    }
-
-    /** 清掉上一次的检测结果（每次截图前调用）。 */
-    static void reset() {
-        lastDetectAt = 0L;
-        lastPath = null;
     }
 
     /**
