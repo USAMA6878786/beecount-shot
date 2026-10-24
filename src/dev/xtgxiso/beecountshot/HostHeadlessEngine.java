@@ -4,7 +4,6 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 
@@ -51,16 +50,37 @@ final class HostHeadlessEngine {
     private static volatile String dispatchedPath;
 
 
-    /** 空闲多久就把引擎销毁（省内存）。 */
-    private static final long IDLE_DESTROY_MS = 45_000L;
+    /**
+     * 空闲多久就把引擎销毁（省内存）。
+     *
+     * <p>实测一台 1080p 机器：引擎活着时宿主进程 PSS **105 MB**，销毁后 **74 MB**——
+     * 一个闲着不干活的 Flutter 引擎值 **约 31 MB**。原来这里是 45 秒（最长拖到 60 秒才检查到），
+     * 也就是每点一次磁贴，就为"可能马上再点一次"这个假设多压 31MB 半分钟。
+     *
+     * <p>压到 12 秒（从**派发那一刻**起算，不是从识别结束算——识别自己花的时间也算在窗口里，
+     * 这样识别越慢、引擎反而越早被回收）：还能接住"连点两张 / 失败后马上重试"，
+     * 真要再点时最多多花约 1 秒重建。实际存活 = 12~16 秒（检查粒度 4 秒）。
+     */
+    private static final long IDLE_DESTROY_MS = 12_000L;
+
+    /** 空闲检查的粒度。想"到点就销毁"，粒度不能比阈值还粗（原来 15 秒粒度会把 15 秒阈值拖成 30 秒）。 */
+    private static final long IDLE_CHECK_MS = 4_000L;
+
+    /** 只保留一条空闲检查链。 */
+    private static volatile boolean idleWatchRunning = false;
 
     /** 最后一次"有活干"的时刻。 */
     private static volatile long lastActivityAt = 0L;
 
     /** 派发了但还没收到回执的路径。非空时不允许销毁引擎（否则把正在跑的识别掐死）。 */
-
-    /** 派发了但还没收到回执的路径。非空时不允许销毁引擎（否则把正在跑的识别掐死）。 */
     private static volatile String inflight;
+
+
+    /** 同一张图重发了几次（识别卡死时用来重试）。 */
+    private static volatile int dispatchAttempts = 0;
+
+    /** 界面引擎出现时有活在飞，等回执完再撤。 */
+    private static volatile boolean yieldPending;
 
     /** 已经删过的路径（兜底时用来跳过）。 */
     private static volatile String cleanedPath;
@@ -72,6 +92,9 @@ final class HostHeadlessEngine {
 
     /** 宿主的类加载器（Flutter 的类只有它能看见）。 */
     private static volatile ClassLoader hostClsLoader;
+
+    /** 宿主应用自己的 uid（加路由规则用）。 */
+    private static volatile int hostUid = -1;
 
     /**
      * 这次派发是不是**我们自己的**无界面引擎发出的？
@@ -98,6 +121,35 @@ final class HostHeadlessEngine {
     }
 
     private HostHeadlessEngine() {
+    }
+
+    /**
+     * 界面引擎出现了 —— 让位。
+     *
+     * <p>两个 Dart 实例在同一个进程里会抢同一份 prefs（实测抛
+     * {@code ConcurrentModificationException: AutoBillingService._loadProcessedScreenshots}），
+     * 所以界面一起来就尽快把我们的引擎撤掉，把并存时间压到最短。
+     *
+     * <p>但如果此刻还有一张截图在识别中，就先不动 —— 中途销毁会把这次记账掐死。
+     * 等它回执完（{@code inflight} 清空）再销毁。
+     */
+    static void yieldToUiEngine() {
+        if (engine == null) {
+            return;
+        }
+        if (inflight != null) {
+            Logx.i("[headless] 界面引擎出现了，但还有一张在识别中，等它完成再撤");
+            // 回执回调里会再看一次
+            yieldPending = true;
+            return;
+        }
+        Logx.i("[headless] 界面引擎出现了，撤掉无界面引擎（避免两个 Dart 抢同一份 prefs）");
+        new Handler(Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                destroyEngine();
+            }
+        });
     }
 
     /** 界面引擎是否已经存在（存在就不该再由我们派发）。 */
@@ -144,6 +196,7 @@ final class HostHeadlessEngine {
     private static void doStart(Context ctx, ClassLoader cl) throws Exception {
         hostClsLoader = cl;
         appCtx = ctx;
+        hostUid = ctx.getApplicationInfo().uid;
         Logx.i("[headless] 启动无界面引擎…");
         Class<?> engineCls = Class.forName(
                 "io.flutter.embedding.engine.FlutterEngine", true, cl);
@@ -234,14 +287,18 @@ final class HostHeadlessEngine {
                                     .invoke(result, (Object) null);
                             if ("startScreenshotObserver".equals(name)) {
                                 // Dart 已经把监听"以为"开起来了，标志也置位了。
-                                // 稍等一下让 ensure 走完，再把截图送进去。
+                                // 等它把 enable() 剩下的两行跑完（置 _isEnabled/_isMonitoring），
+                                // 再把截图送进去。
+                                //
+                                // 这个等待原来是 600ms，属于保守值：Dart 那边 await 我们的回执后
+                                // 紧接着就置位，实测 250ms 足够；再短就有"标志没置位、图被静默忽略"的风险。
                                 dartReady = true;
                                 new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                                     @Override
                                     public void run() {
                                         dispatchNow();
                                     }
-                                }, 600L);
+                                }, 250L);
                             }
                         } catch (Throwable t) {
                             Logx.w("[headless] 桩处理失败：" + t.getMessage());
@@ -257,36 +314,77 @@ final class HostHeadlessEngine {
 
     /** 把 pendingPath 派发给 Dart。 */
     /** 找最新的一张本模块截图（路径没传进来时用）。 */
-    /** 空闲检查：每 15 秒看一次，超过 IDLE_DESTROY_MS 没活干就销毁引擎。 */
-    private static void scheduleIdleCheck() {
+    /**
+     * 卡死检测：派发后 12 秒还没回执，就认为这次请求废了（比如被系统掐断连接），
+     * **清掉 inflight 并重发一次**。
+     *
+     * <p>为什么重发有用：Dart 那边卡住的是**那一次 Future**，我们再次
+     * {@code onScreenshotDetected} 会走一条全新的处理流程、发一条全新的连接 ——
+     * 如果系统是"周期性给窗口"，重试就可能赶上。
+     *
+     * <p>最多重试 2 次（共 3 次机会），之后交给兜底删图。
+     */
+    private static void scheduleStallCheck(final String path) {
         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
                 try {
-                    if (engine == null) {
+                    if (!path.equals(inflight)) {
+                        return;   // 已经回了，正常
+                    }
+                    if (dispatchAttempts >= 2) {
+                        Logx.w("[headless] 已重试 2 次仍无回执，放弃（交给兜底删图）");
                         return;
                     }
-                    long idle = System.currentTimeMillis() - lastActivityAt;
-                    if (inflight != null) {
-                        // 还有一张在识别中，不能销毁
-                        scheduleIdleCheck();
-                        return;
-                    }
-                    if (inflight != null) {
-                        // 还有一张在识别中，不能销毁
-                        scheduleIdleCheck();
-                        return;
-                    }
-                    if (idle >= IDLE_DESTROY_MS) {
-                        destroyEngine();
-                    } else {
-                        scheduleIdleCheck();
-                    }
+                    dispatchAttempts++;
+                    Logx.w("[headless] 12 秒无回执，清掉 inflight 并重发（第 "
+                            + dispatchAttempts + " 次重试）");
+                    inflight = null;
+                    lastDispatched = null;
+                    pendingPath = path;
+                    dispatchNow();
                 } catch (Throwable t) {
-                    Logx.w("[headless] 空闲检查失败：" + t.getMessage());
+                    Logx.w("[headless] 卡死检测失败：" + t.getMessage());
                 }
             }
-        }, 15_000L);
+        }, 12_000L);
+    }
+
+    /**
+     * 空闲检查：每 {@link #IDLE_CHECK_MS} 看一次，超过 {@link #IDLE_DESTROY_MS} 没活干就销毁。
+     *
+     * <p>整条链只跑一份：以前每次派发都起一个新链，点三次就有三条同时在数，
+     * 销毁时还要靠 `engine == null` 各自退出——纯粹浪费唤醒。
+     */
+    private static final Runnable IDLE_TICK = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (engine == null) {
+                    idleWatchRunning = false;
+                    return;
+                }
+                long idle = System.currentTimeMillis() - lastActivityAt;
+                if (inflight == null && idle >= IDLE_DESTROY_MS) {
+                    idleWatchRunning = false;
+                    destroyEngine();
+                    Logx.i("[headless] 空闲 " + (idle / 1000L) + "s，引擎已销毁（省内存）");
+                    return;
+                }
+                new Handler(Looper.getMainLooper()).postDelayed(this, IDLE_CHECK_MS);
+            } catch (Throwable t) {
+                idleWatchRunning = false;
+                Logx.w("[headless] 空闲检查失败：" + t.getMessage());
+            }
+        }
+    };
+
+    private static void scheduleIdleCheck() {
+        if (idleWatchRunning) {
+            return;   // 已经在数了
+        }
+        idleWatchRunning = true;
+        new Handler(Looper.getMainLooper()).postDelayed(IDLE_TICK, IDLE_CHECK_MS);
     }
 
     /**
@@ -296,14 +394,19 @@ final class HostHeadlessEngine {
      */
     private static void destroyEngine() {
         Object e = engine;
+        idleWatchRunning = false;
         if (e == null) {
             return;
         }
         try {
             e.getClass().getMethod("destroy").invoke(e);
-            Logx.i("[headless] 空闲超时，引擎已销毁（省内存）");
+            Logx.i("[headless] 引擎已销毁（省内存）");
         } catch (Throwable t) {
             Logx.w("[headless] 引擎销毁失败：" + t.getMessage());
+        }
+        TunnelRoute.release(hostUid);
+        synchronized (QUEUE) {
+            QUEUE.clear();   // 引擎都没了，排队的图派不出去（模块侧的清理器会兜底删掉）
         }
         engine = null;
         channel = null;
@@ -354,8 +457,38 @@ final class HostHeadlessEngine {
             return;
         }
         pendingPath = newest;
-        dispatchNow();
+        // 开着 fake-ip 代理时，MIUI 的后台限制会让它的流量绕开隧道
+        // （域名解析成 198.18.x 假地址，隧道外根本不可达，SYN 永远发不出去）。
+        // 所以派发前先把它的路由掰回隧道里。实测这样就能从"卡死 40 秒"变成"9 秒识别完"。
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TunnelRoute.ensure(appCtx, hostUid);
+                } catch (Throwable ignored) {
+                }
+                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                    @Override
+                    public void run() {
+                        dispatchNow();
+                    }
+                });
+            }
+        }, "bee-tunnel-route").start();
     }
+
+    /**
+     * 等派发的截图队列。**一次只派一张**：Dart 那边同一时刻只处理一张，
+     * 同时塞进去两张会互相覆盖 {@code inflight}/{@code dispatchedPath}，
+     * 结果是"有一张没识别 + 删错文件"。
+     *
+     * <p>为什么必须有队列：连点时（间隔 2~3 秒）识别还没回来，下一张就到了。
+     * 以前这里是"直接忽略"，等于**把这张图静默丢掉**——用户点了却没记账。
+     */
+    private static final java.util.ArrayDeque<String> QUEUE = new java.util.ArrayDeque<String>();
+
+    /** 队列上限。真排到这个数说明识别已经严重跟不上，多留也没意义。 */
+    private static final int QUEUE_MAX = 6;
 
     private static void dispatchNow() {
         if (pendingPath == null) {
@@ -379,9 +512,26 @@ final class HostHeadlessEngine {
             pendingPath = null;
             return;
         }
+        // 上一张还在识别：排队，等它回执后自动续派（以前是直接丢掉这张）
+        if (inflight != null) {
+            synchronized (QUEUE) {
+                if (!QUEUE.contains(path)) {
+                    if (QUEUE.size() >= QUEUE_MAX) {
+                        String dropped = QUEUE.pollFirst();
+                        Logx.w("[headless] 队列满了，丢掉最早的一张：" + RootShell.baseName(dropped));
+                    }
+                    QUEUE.addLast(path);
+                    Logx.i("[headless] 上一张还在识别，排队等派发（队列 "
+                            + QUEUE.size() + "）：" + RootShell.baseName(path));
+                }
+            }
+            pendingPath = null;
+            return;
+        }
+        final String dispatchPath = path;
+        dispatchAttempts = 0;
         lastDispatched = path;
         dispatchedPath = path;
-        inflight = path;
         inflight = path;
         lastActivityAt = System.currentTimeMillis();
         scheduleIdleCheck();
@@ -404,22 +554,50 @@ final class HostHeadlessEngine {
                         public Object invoke(Object proxy, Method method, Object[] a) {
                             String n = method.getName();
                             inflight = null;
-                            inflight = null;
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    TunnelRoute.release(hostUid);
+                                }
+                            }, "bee-tunnel-release").start();
+                            if (yieldPending) {
+                                yieldPending = false;
+                                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (inflight == null) {
+                                            Logx.i("[headless] 识别完成，界面引擎在，撤掉无界面引擎");
+                                            destroyEngine();
+                                        }
+                                    }
+                                });
+                            }
                             if ("success".equals(n)) {
                                 Logx.i("[headless] Dart 处理完成，返回=" 
                                         + (a != null && a.length > 0 ? a[0] : "null"));
                                 // 它认了（账记上了），但不会写我们依赖的"落库完成"日志，
                                 // 所以这里以回执为准去删图，别再等配对。
-                                final String p = dispatchedPath;
-                                cleanedPath = p;
+                                //
+                                // 用**闭包里捕获的那张**，不读 dispatchedPath：
+                                // 连点时全局变量可能已经被下一张覆盖，读它会删错文件。
+                                //
+                                // 这里曾经固定 sleep 1500ms 再删，理由是"怕它还没写完库"。
+                                // 但回执本身就是 Dart 处理函数的返回值——库在返回之前就写完了，
+                                // 这 1.5 秒纯属白等，而且它压在"点磁贴 → 图消失"这条感知路径上。
+                                // 现在只留 250ms 给它的通知/相册扫描一点余量。
+                                final String p = dispatchPath;
                                 cleanedPath = p;
                                 new Thread(new Runnable() {
                                     @Override
                                     public void run() {
                                         try {
-                                            Thread.sleep(1500L);
+                                            Thread.sleep(250L);
                                         } catch (InterruptedException ignored) {
                                         }
+                                        // 注意：这里跑在**宿主进程**里，`ShotCleaner` 的队列是
+                                        // 这个进程自己的一份静态状态，和模块 App 里的那个不是同一个对象。
+                                        // 所以不能在这里"撤销任务"——那只会操作一个空队列。
+                                        // 模块侧靠"扫盘为空就收工"提前结束（见 ShotCleaner 的扫盘段）。
                                         ShotCleaner.deleteAfterHeadless(appCtx, p);
                                     }
                                 }, "bee-headless-clean").start();
@@ -431,12 +609,30 @@ final class HostHeadlessEngine {
                             } else if ("notImplemented".equals(n)) {
                                 Logx.w("[headless] Dart 没注册处理器（notImplemented）——enable 没走到");
                             }
+                            // 这一张结束了：看队列里还有没有连点排下的下一张，有就立刻续派。
+                            // 不管上面是 success / error / notImplemented 都要续——
+                            // 卡住一张不能把后面排队的全废掉。
+                            final String next;
+                            synchronized (QUEUE) {
+                                next = QUEUE.pollFirst();
+                            }
+                            if (next != null) {
+                                Logx.i("[headless] 继续派发排队中的截图：" + RootShell.baseName(next));
+                                new Handler(Looper.getMainLooper()).post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        pendingPath = next;
+                                        dispatchNow();
+                                    }
+                                });
+                            }
                             return null;
                         }
                     });
             mc.getClass().getMethod("invokeMethod", String.class, Object.class, resultCls)
                     .invoke(mc, "onScreenshotDetected", path, cb);
             Logx.i("[headless] 已派发截图（等 Dart 回调）：" + RootShell.baseName(path));
+            scheduleStallCheck(path);
 
             // 兜底：20 秒内没收到回执也照样删（AI 通常 6~10 秒，20 秒足够）。
             // 政策是"磁贴截的图最终都要删"，不管有没有记成账——
