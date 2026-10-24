@@ -48,11 +48,6 @@ final class Ui {
     static final int ON_SURFACE_VARIANT = Color.parseColor("#514539");
     /** 未选中态的描边/轨道。 */
     static final int OUTLINE_VARIANT = Color.parseColor("#D5C3B2");
-    /** 状态色。 */
-    static final int OK = Color.parseColor("#1D7A5F");
-    static final int WARN = Color.parseColor("#A36A00");
-    static final int ERROR = Color.parseColor("#B3261E");
-
     // ---------------- 尺寸令牌（M3 常用档位） ----------------
 
     /** 页面左右留白。 */
@@ -169,13 +164,6 @@ final class Ui {
         return b;
     }
 
-    /** M3 text 按钮：无底、主色字。 */
-    static TextView textButton(Context c, String text, View.OnClickListener l) {
-        TextView b = pillText(c, text, PRIMARY, Color.TRANSPARENT);
-        b.setOnClickListener(l);
-        return b;
-    }
-
     private static TextView pillText(Context c, String text, int textColor, int bg) {
         TextView b = new TextView(c);
         b.setText(text);
@@ -228,26 +216,6 @@ final class Ui {
         parent.addView(row);
     }
 
-    /** M3 outlined 按钮：透明底 + 1dp 描边 + 主色字。 */
-    static TextView outlinedButton(Context c, String text, View.OnClickListener l) {
-        TextView b = new TextView(c);
-        b.setText(text);
-        b.setTextSize(14f);
-        b.setTextColor(PRIMARY);
-        b.setGravity(Gravity.CENTER);
-        b.setMinHeight(dp(c, BUTTON_HEIGHT));
-        b.setPadding(dp(c, 20), dp(c, 10), dp(c, 20), dp(c, 10));
-        b.setClickable(true);
-        b.setFocusable(true);
-        b.setIncludeFontPadding(false);
-        GradientDrawable g = rounded(Color.TRANSPARENT, BUTTON_RADIUS, c);
-        g.setStroke(Math.max(1, dp(c, 1)), OUTLINE_VARIANT);
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x1F8A5100), g, null));
-        // 曾经漏了这一行：按钮画得很像，但点了没反应。
-        b.setOnClickListener(l);
-        return b;
-    }
-
     /**
      * M3 列表行：左对齐文字 + 右侧箭头，整行可点。
      *
@@ -284,14 +252,6 @@ final class Ui {
         sb.setProgressTintList(ColorStateList.valueOf(PRIMARY));
         sb.setThumbTintList(ColorStateList.valueOf(PRIMARY));
         sb.setProgressBackgroundTintList(ColorStateList.valueOf(PRIMARY_CONTAINER));
-    }
-
-    /** 按钮之间留一点空。 */
-    static LinearLayout.LayoutParams buttonLp(Context c, boolean first) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = first ? 0 : dp(c, 8);
-        return lp;
     }
 
     /** 通用 LayoutParams 构造（width/height 用 -1 = MATCH、-2 = WRAP）。 */
