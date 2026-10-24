@@ -15,15 +15,10 @@ import android.os.IBinder;
  * 常驻服务：让模块进程不被系统回收。
  *
  * <p><b>为什么需要它。</b>「记账截图」磁贴的服务跑在模块 App 的进程里，而这个进程闲置时
- * 会被系统回收。于是冷启动点上磁贴要付两份代价：
- * <ol>
- *   <li><b>进程冷启动</b>——发生在我们的第一行日志之前，用户能直接感觉到；</li>
- *   <li><b>无障碍服务连接不上</b>——无障碍是我们最快的截屏路径（直调系统截屏动作，
- *       不走按键注入）。进程刚起来时它还没绑定好，只能用慢的 root 模拟按键兜底；
- *       更糟的是真机日志里出现过"服务一旦掉线就再也连不回来"（几十次点击全程
- *       {@code a11y=false}）。</li>
- * </ol>
- * 常驻之后这两个问题一起消失。系统自己的截图磁贴之所以一点就响应，本质上也是这个原因
+ * 会被系统回收，于是点磁贴要先付一次进程冷启动（发生在我们的第一行日志之前，
+ * 用户能直接感觉到：手指离开屏幕后要等一会儿才有反应）。
+ *
+ * <p>常驻之后这次冷启动就没了。系统自己的截图磁贴之所以一点就响应，本质上也是这个原因
  * ——它跑在 SystemUI 这个永不被回收的进程里。
  *
  * <h3>关于那条通知</h3>
@@ -43,9 +38,6 @@ import android.os.IBinder;
 public class KeepAliveService extends Service {
 
     private static final String CHANNEL_ID = "beecount_shot_keepalive";
-    /** 提醒型通知（无障碍掉线）。跟常驻那条分开，可以对它单独设静默。 */
-    private static final String ALERT_CHANNEL_ID = "beecount_shot_alert";
-    private static final int ALERT_ID = 1002;
     private static final int NOTIF_ID = 1001;
 
     /** 通知权限的请求码（设置页用）。 */
@@ -134,45 +126,6 @@ public class KeepAliveService extends Service {
             c.stopService(new Intent(c, KeepAliveService.class));
         } catch (Throwable t) {
             Logx.w("[keepalive] stop failed: " + t.getMessage());
-        }
-    }
-
-    /**
-     * 提醒用户「截屏服务掉线了」。
-     *
-     * <p>为什么值得打扰一次：无障碍是截屏最快的那条路，掉线之后每次点击都会退回
-     * root 模拟按键（慢一倍、还可能重试）。原来这件事**只写在日志里**，用户完全不知道。
-     */
-    static void notifyA11yLost(Context c) {
-        if (c == null) {
-            return;
-        }
-        try {
-            NotificationManager nm = (NotificationManager) c.getSystemService(NOTIFICATION_SERVICE);
-            if (nm == null) {
-                return;
-            }
-            if (Build.VERSION.SDK_INT >= 26) {
-                NotificationChannel ch = new NotificationChannel(ALERT_CHANNEL_ID,
-                        "截屏服务提醒", NotificationManager.IMPORTANCE_DEFAULT);
-                ch.setDescription("截屏服务（无障碍）掉线时提醒你重新开启。");
-                nm.createNotificationChannel(ch);
-            }
-            Notification.Builder b = Build.VERSION.SDK_INT >= 26
-                    ? new Notification.Builder(c, ALERT_CHANNEL_ID)
-                    : new Notification.Builder(c);
-            b.setSmallIcon(R.drawable.ic_tile_shot);
-            b.setContentTitle("截屏服务已掉线");
-            b.setContentText("点这里重新开启。不开启也能用，但每次点磁贴会慢一倍。");
-            b.setAutoCancel(true);
-            Intent open = new Intent(c, SettingsActivity.class);
-            open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            b.setContentIntent(PendingIntent.getActivity(c, ALERT_ID, open,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
-            nm.notify(ALERT_ID, b.build());
-            Logx.w("[keepalive] 已发出「截屏服务掉线」提醒");
-        } catch (Throwable t) {
-            Logx.w("[keepalive] notifyA11yLost failed: " + t.getMessage());
         }
     }
 
