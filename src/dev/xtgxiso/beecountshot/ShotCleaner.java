@@ -415,17 +415,61 @@ final class ShotCleaner {
         }
     }
 
+    /**
+     * 正在删的路径（单飞）。
+     *
+     * <p>现在同一张图会有两条删图路径同时到达：宿主回执后推的"通知删"、和模块自己的清理任务。
+     * 不加锁就会两条线程都去 `rm` 同一张图——虽然后来把判定改成了"看文件在不在"，
+     * 但仍然会重复删、重复写日志，甚至重复弹提示。
+     */
+    private static final java.util.Set<String> IN_FLIGHT =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    /** 已经删成功的路径（有界，防重复处理 + 防重复提示）。 */
+    private static final java.util.LinkedHashSet<String> DONE =
+            new java.util.LinkedHashSet<String>();
+
     private static void doDelete(Context ctx, String path, long successTs) {
-        Logx.i("[clean] deleting " + path + " (success ts=" + successTs + ")");
-        boolean ok = RootShell.deleteFile(path);
-        if (!ok) {
-            Logx.w("[clean] deletion failed; file left in place");
-            toast(ctx, "记账成功，但截图删除失败（可看日志）");
+        if (path == null || path.length() == 0) {
             return;
         }
-        purgeGallery(ctx, path);
-        Logx.i("[clean] screenshot deleted and gallery entry dropped");
-        // 删除结果不再打扰用户（用户只要知道"截图成没成"），只留日志。
+        // 统一成 /storage/emulated/0/... —— 同一条路径会以 /sdcard/... 和 /storage/... 两种写法
+        // 出现（宿主读库给的是前者，模块自己记的是后者），不归一化就会绕过下面的去重。
+        if (path.startsWith("/sdcard/")) {
+            path = "/storage/emulated/0/" + path.substring("/sdcard/".length());
+        }
+        if (!IN_FLIGHT.add(path)) {
+            Logx.i("[clean] 已有线程在删这张，跳过：" + RootShell.baseName(path));
+            return;
+        }
+        try {
+            synchronized (DONE) {
+                if (DONE.contains(path)) {
+                    Logx.i("[clean] 这张已经删过，跳过：" + RootShell.baseName(path));
+                    return;
+                }
+            }
+            Logx.i("[clean] deleting " + path + " (success ts=" + successTs + ")");
+            boolean ok = RootShell.deleteFile(path);
+            if (!ok) {
+                Logx.w("[clean] deletion failed; file left in place");
+                toast(ctx, "记账成功，但截图删除失败（可看日志）");
+                return;
+            }
+            synchronized (DONE) {
+                DONE.add(path);
+                while (DONE.size() > 32) {
+                    java.util.Iterator<String> it = DONE.iterator();
+                    it.next();
+                    it.remove();
+                }
+            }
+            purgeGallery(ctx, path);
+            Logx.i("[clean] screenshot deleted and gallery entry dropped");
+            // 删除结果不再打扰用户（用户只要知道"截图成没成"），只留日志。
+        } finally {
+            IN_FLIGHT.remove(path);
+        }
     }
 
     /** 文件被 rm 之后，让 MediaStore 把那张图从相册里去掉。 */
