@@ -99,11 +99,8 @@ public final class RootShell {
         // 广播的输出保留下来（合并成一次 su 之后仍然要能看出它到底发出去没有）
         cmd.append(" 2>&1; ");
         cmd.append("cmd statusbar collapse; C=$?; ");
-        // 顺带把"时间标记"立起来。
-        //
-        // 无障碍那条路要用它判断"图到底出来了没有"，而标记必须早于截屏请求。
-        // 立在这里等于**白送**——反正这条 su 本来就要开，不必再单独开一次
-        // （每次 su 实测 ~100ms，省下来就是净赚）。
+        // 可选：顺带把"时间标记"立起来（只有注入按键那条路需要用它对时）。
+        // 平时传 null —— 抓帧走 {@code screencap}，返回即出图，不需要这个标记。
         if (markPath != null) {
             cmd.append("rm -f ").append(markPath).append("; touch ").append(markPath)
                     .append(" 2>/dev/null; ");
@@ -114,64 +111,6 @@ public final class RootShell {
         Logx.i("[root] arm+collapse -> exit=" + r.exit
                 + " out=" + trim(r.out) + " err=" + trim(r.err));
         return r;
-    }
-
-    /**
-     * 用 root 把模块自己的「截屏服务」（无障碍）打开。
-     *
-     * <p><b>为什么需要它：</b>无障碍的 {@code GLOBAL_ACTION_TAKE_SCREENSHOT} 是
-     * <b>直接调系统的截屏动作</b>，比"root 注入按键"快得多也稳得多——注入按键偶尔会
-     * 完全没生效，然后要白等 1~2 秒确认再换下一条命令，那一次点击就"卡住"了。
-     *
-     * <p>但 Android 有个机制：<b>应用被覆盖安装后，它的无障碍服务会被系统自动关掉。</b>
-     * 于是每次更新模块，用户都得手动再去「无障碍」里开一次；不去开就一直退在慢的那条路上
-     * （真机日志里就是这样：全程 {@code a11y=false}）。
-     *
-     * <p>模块有 root，所以可以自己把这件事办掉：读出现有的
-     * {@code enabled_accessibility_services}，<b>在末尾追加</b>我们这一个
-     * （**不动用户已经开的其它服务**），再把 {@code accessibility_enabled} 置 1。
-     * 整段在一次 su 里做完。已经开着的直接跳过，不重复写。
-     */
-    /** 上次强制重绑无障碍服务的时间（节流用）。 */
-    private static volatile long lastA11yRebindAt = 0L;
-
-    public static void ensureAccessibilityEnabled() {
-        final String comp = "dev.xtgxiso.beecountshot/"
-                + "dev.xtgxiso.beecountshot.ShotAccessibilityService";
-        // 节流：强制重绑要连写两次系统设置，别每次点击都来一遍。
-        long now = System.currentTimeMillis();
-        if (now - lastA11yRebindAt < 5 * 60 * 1000L) {
-            Logx.i("[root] ensure a11y skipped（刚试过不久）");
-            return;
-        }
-        lastA11yRebindAt = now;
-
-        // 分两种情况：
-        //
-        //   ① 设置里没有我们 —— 追加进去（首次开启）。
-        //
-        //   ② 设置里**有**我们、但服务还是没连上 —— **先摘掉再写回**。
-        //      因为 `settings put` 只有在"值发生变化"时才会让 AccessibilityManagerService
-        //      重新绑定服务。真机日志里能对上：只有 `ADDED`（值变了）那一次之后出现了
-        //      `[a11y] service connected`，之后值再没变过，服务就一直没连上。
-        //      制造一次值变化，把它拽回来。只动我们自己的那一项，不碰用户开的其它服务。
-        String cmd = ""
-                + "C=" + comp + "; "
-                + "V=$(settings get secure enabled_accessibility_services 2>/dev/null); "
-                + "case \":$V:\" in "
-                + "  *\":$C:\"*) "
-                + "     N=$(echo \":$V:\" | sed \"s|:$C:|:|\" | sed -e \"s|^:||\" -e \"s|:$||\"); "
-                + "     settings put secure enabled_accessibility_services \"$N\"; "
-                + "     settings put secure enabled_accessibility_services \"$V\"; "
-                + "     echo REBOUND ;; "
-                + "  *) if [ -z \"$V\" ] || [ \"$V\" = null ]; then N=\"$C\"; "
-                + "     else N=\"$V:$C\"; fi; "
-                + "     settings put secure enabled_accessibility_services \"$N\" && echo ADDED ;; "
-                + "esac; "
-                + "settings put secure accessibility_enabled 1";
-        Result r = exec(cmd, 12000L);
-        Logx.i("[root] ensure a11y enabled -> exit=" + r.exit
-                + " out=" + trim(r.out) + " err=" + trim(r.err));
     }
 
     /** 强制停止宿主（改完模块配置后必须重启它，hook 才生效）。 */
@@ -269,12 +208,11 @@ public final class RootShell {
     /**
      * 用 root 触发系统截屏，并**当场验证图真的出来了**。
      *
-     * <p>这是取代无障碍截屏的主路径，关键收益是**不再依赖无障碍服务**：Android 有个
-     * 安全机制，应用被覆盖安装后系统会自动关掉它的无障碍服务，以前每次更新模块
-     * 用户都会遇到"磁贴点了没反应"，根子就在这儿。
+     * <p>这是 {@code screencap} 之外的**唯一兜底**（v2.72 起无障碍路径已整体删除）：
+     * 走系统真实截图流程，文件由系统命名并登记进媒体库。
      *
      * <p>因为命令能不能截成功取决于 ROM，这里不猜：每发一条就轮询一次截图目录，
-     * 出来了才算数，不出来再换下一条。全部失败返回 false，让调用方退回无障碍。
+     * 出来了才算数，不出来再换下一条。全部失败返回 false，调用方如实报"截图失败"。
      */
     public static boolean takeScreenshotViaRoot() {
         final String mark = newMarkPath();
@@ -322,28 +260,6 @@ public final class RootShell {
         }
         Logx.e("[root] all root screenshot methods failed");
         return false;
-    }
-
-    /** 生成一个标记路径（"立标记"这个动作由 {@link #armAndCollapse} 顺带做掉）。 */
-    public static String newMark() {
-        return newMarkPath();
-    }
-
-    /** 清掉标记文件。 */
-    public static void clearMark(String mark) {
-        if (mark != null) {
-            exec("rm -f " + mark, 5000L);
-        }
-    }
-
-    /**
-     * 在 {@code timeoutMs} 内等一张"比标记更新"的图出现。
-     *
-     * <p>给"无障碍直调截屏"那条路做确认用：受理了不代表图一定出来，
-     * 没出来就退回 root 模拟按键。
-     */
-    public static boolean waitForNewShot(long timeoutMs, String mark) {
-        return waitForScreenshot(timeoutMs, mark);
     }
 
     /**
