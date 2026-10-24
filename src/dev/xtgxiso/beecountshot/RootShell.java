@@ -523,19 +523,19 @@ public final class RootShell {
             Logx.w("[clean] REFUSED to delete (failed safety check): " + path);
             return false;
         }
-        String cmd = "if [ -f '" + path + "' ]; then rm -f '" + path + "' && echo DELETED; "
-                + "else echo MISSING; fi";
+        // 先删、再**看结果**：判断依据是"这一刻文件还在不在"，而不是 rm 的退出码。
+        //
+        // 原来的写法是 `if [ -f p ]; then rm -f p && echo DELETED; else echo MISSING; fi`，
+        // 在两条线程同时删同一张图时会误报失败：两边都通过 `-f` 检查，
+        // 先删的打印 DELETED，后删的 rm 失败（文件没了）→ 既不打印 DELETED 也不打印 MISSING
+        // → 被判成"删除失败"并弹提示。而实际上图早就删掉了。
+        String cmd = "rm -f '" + path + "' 2>/dev/null; "
+                + "if [ -e '" + path + "' ]; then echo STILL; else echo GONE; fi";
         Result r = exec(cmd, 10000L);
-        // MISSING 也算成功：文件已经不存在了（宿主先删掉了，或上一轮兜底删过）。
-        // 目标本来就是"这张图不在了"，所以只要"不在了"就算达成。
-        // —— 之前把 MISSING 当失败，导致明明删成功了还弹"截图删除可能失败"，
-        //    这个误报存在了好几个版本。
-        boolean gone = r.out != null
-                && (r.out.indexOf("DELETED") >= 0 || r.out.indexOf("MISSING") >= 0);
-        boolean ok = r.exit == 0 && gone;
-        Logx.i("[clean] delete " + path + " -> " + (ok ? "OK" : "FAILED")
+        boolean gone = r.out != null && r.out.indexOf("GONE") >= 0;
+        Logx.i("[clean] delete " + path + " -> " + (gone ? "OK" : "FAILED")
                 + " out=" + trim(r.out) + " err=" + trim(r.err));
-        return ok;
+        return gone;
     }
 
     // ---------------------------------------------------------------- 执行器
