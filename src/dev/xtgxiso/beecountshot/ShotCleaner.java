@@ -52,7 +52,7 @@ final class ShotCleaner {
     private static final long QUERY_TIMEOUT_MS = 3000L;
 
     /** 单个任务的总等待上限。 */
-    private static final long MAX_WAIT_MS = 60000L;
+    private static final long MAX_WAIT_MS = 75000L;
 
     /** 扫盘的全局间隔（一个工人服务所有任务，所以只需要这么一次）。 */
     private static final long SCAN_INTERVAL_MS = 5000L;
@@ -65,11 +65,15 @@ final class ShotCleaner {
      * <b>被防抖跳过的那几张永远不会出现在宿主的"放行清单"里</b>，于是"只删宿主确认过的"
      * 这条规则对它们永远不成立——它们会一直躺在相册里。用户看到的"还剩一张"就是这么来的。
      *
-     * <p>所以再加一条判据：**点下磁贴之后 6 秒内出现的截图，就是我们的**。
-     * root 抓帧约 0.2~0.5 秒落盘，最慢的注入按键兜底也不到 4 秒，6 秒留足余量，
-     * 又不会把用户随手手动截的图卷进来（那得在点磁贴后 6 秒内再手动截一张，概率极低）。
+     * <p>所以再加一条判据：**点下磁贴之后一小段窗口内出现的截图，就是我们的**。
+     *
+     * <p><b>窗口原本是 6 秒，太大了</b>：连点（间隔 0.6~1 秒）时，任务 A 的 6 秒窗口
+     * 会把后面好几张（B、C…）都圈进来。一旦 A 的兜底先到期，就可能把**还没轮到识别的
+     * B/C 的图删掉**——实测日志里"时间窗认领 1 张"就把 233807 删了。
+     * root 抓帧实测 200~500ms 落盘，注入按键兜底也 <2 秒，所以收到 2.5 秒足够，
+     * 配合"同一轮里一张图只被一个任务认领"，彻底避免误删邻图。
      */
-    private static final long MINE_WINDOW_MS = 6000L;
+    private static final long MINE_WINDOW_MS = 2500L;
 
     // ---------------------------------------------------------------- 队列
 
@@ -196,6 +200,10 @@ final class ShotCleaner {
                 // 同一张图这一轮只查一次宿主，结果共享
                 java.util.Map<String, ShotBridge.Answer> cache =
                         new java.util.HashMap<String, ShotBridge.Answer>();
+                // 同一轮里一张图只归一个任务（按任务顺序，最早点击的优先认领它自己那张），
+                // 否则连点时 A 的窗口会把 B/C 的图也圈进来、抢着删。
+                java.util.Set<String> claimedThisPass =
+                        new java.util.HashSet<String>();
 
                 for (int i = 0; i < snapshot.size(); i++) {
                     Task t = snapshot.get(i);
@@ -212,6 +220,10 @@ final class ShotCleaner {
                                 || mtime > t.shotAt + MINE_WINDOW_MS)) {
                             continue;
                         }
+                        if (claimedThisPass.contains(c)) {
+                            continue;   // 已被更早的任务认领
+                        }
+                        claimedThisPass.add(c);
                         t.mine.add(c);
 
                         ShotBridge.Answer answer = cache.get(c);
