@@ -109,6 +109,20 @@ final class ShotBridge {
                         }
                         (a.decisive ? PUSH_QUEUE : REPLY_QUEUE).offer(a);
 
+                        // 宿主只说"识别完了、没删"（它现在不碰 root）——由模块立刻删。
+                        // 走独立线程：删文件是 su 阻塞调用，不能压在主线程上。
+                        if (a.processed && !a.deleted && a.path != null && a.path.length() > 0) {
+                            final String delPath = a.path;
+                            final Context appCtx = context.getApplicationContext() != null
+                                    ? context.getApplicationContext() : context;
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    ShotCleaner.deleteAfterHeadless(appCtx, delPath);
+                                }
+                            }, "bee-del-shot").start();
+                        }
+
                         // 刚刚记账成功后，顺手把桌面小组件的数字也刷一下，
                         // 免得它要等到下一次 30 分钟的周期更新。
                         if (a.success || a.deleted) {
