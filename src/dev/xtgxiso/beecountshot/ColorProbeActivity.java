@@ -3,7 +3,6 @@ package dev.xtgxiso.beecountshot;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -36,6 +35,18 @@ import java.io.File;
  */
 public class ColorProbeActivity extends Activity {
 
+    /**
+     * 自动模式：由设置页在「打开图片压缩」时拉起——进来就画色块、测完自己关掉，
+     * 结果通过 {@link #EXTRA_VERDICT} / {@link #EXTRA_DETAIL} 回传，全程不用手动操作。
+     *
+     * <p>不加这个 extra（比如 adb 直接 {@code am start}）就是原来的手动模式：测完停在页面上。
+     */
+    static final String EXTRA_AUTO = "auto";
+    /** 一句话结论，例如「✓ 采用交换RB（差 0）」。 */
+    static final String EXTRA_VERDICT = "verdict";
+    /** 完整测量明细（几行文本）。 */
+    static final String EXTRA_DETAIL = "detail";
+
     /** 四块纯色与它们的采样点（相对宽高的比例）。 */
     private static final float[] SX = {0.25f, 0.75f, 0.25f, 0.75f};
     private static final float[] SY = {0.30f, 0.30f, 0.60f, 0.60f};
@@ -47,10 +58,12 @@ public class ColorProbeActivity extends Activity {
     };
 
     private TextView tv;
+    private boolean auto;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        auto = getIntent() != null && getIntent().getBooleanExtra(EXTRA_AUTO, false);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
@@ -62,34 +75,60 @@ public class ColorProbeActivity extends Activity {
         tv.setTextColor(Color.WHITE);
         tv.setTextSize(13f);
         tv.setPadding(24, 16, 24, 24);
-        tv.setText("测量中…");
+        tv.setText(auto ? "正在校准颜色通道…（几秒后自动返回）" : "测量中…");
         root.addView(tv, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
 
-        // 等界面稳定（布局、导航栏动画）再抓，否则抓到的是过渡帧
+        // 等界面稳定（布局、导航栏动画）再抓，否则抓到的是过渡帧。
+        // 自动模式下少等一点：这个页面只有一块自绘色板，没有要加载的东西。
         new Handler(getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        final String r = measure();
+                        final Result r = measure();
                         runOnUiThread(new Runnable() {
                             @Override
                             public void run() {
-                                tv.setText(r);
+                                tv.setText(r.detail);
+                                if (!auto) {
+                                    return;
+                                }
+                                // 自动模式：把结论回传给设置页，停一下让人看清色块再退。
+                                android.content.Intent data = new android.content.Intent();
+                                data.putExtra(EXTRA_VERDICT, r.verdict);
+                                data.putExtra(EXTRA_DETAIL, r.detail);
+                                setResult(RESULT_OK, data);
+                                new Handler(getMainLooper()).postDelayed(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        finish();
+                                    }
+                                }, 700L);
                             }
                         });
                     }
                 }, "bee-colorprobe").start();
             }
-        }, 1500L);
+        }, auto ? 700L : 1500L);
+    }
+
+    /** 一次测量的结论：一句话 + 明细。 */
+    private static final class Result {
+        final String verdict;
+        final String detail;
+
+        Result(String verdict, String detail) {
+            this.verdict = verdict;
+            this.detail = detail;
+        }
     }
 
     /** 抓一帧，按已知色值判定两种通道顺序哪个对。 */
-    private String measure() {
+    private Result measure() {
         DisplayMetrics dm = new DisplayMetrics();
         getWindowManager().getDefaultDisplay().getMetrics(dm);
         int w = dm.widthPixels;
@@ -108,7 +147,7 @@ public class ColorProbeActivity extends Activity {
         if (noSwap == null || yesSwap == null) {
             String msg = "✗ raw 解码失败，无法校准（继续用 PNG）";
             Logx.w("[colorprobe] " + msg);
-            return msg;
+            return new Result(msg, msg);
         }
 
         int dNo = maxDiff(noSwap);
@@ -138,7 +177,7 @@ public class ColorProbeActivity extends Activity {
         }
         sb.append("\n").append(verdict);
         Logx.i("[colorprobe] " + sb.toString().replace('\n', ' '));
-        return sb.toString();
+        return new Result(verdict, sb.toString());
     }
 
     private static String colorList(int[] cs) {
