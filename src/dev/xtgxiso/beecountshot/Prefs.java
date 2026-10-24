@@ -15,18 +15,18 @@ public final class Prefs {
     private static final String KEY_RAW_SWAP = "raw_swap";
     private static final String KEY_NOTIF_ASKED = "notif_asked";
     private static final String KEY_MEDIA_ASKED = "media_asked";
+    private static final String KEY_COMPRESS = "compress";
+    private static final String KEY_COMPRESS_INITED = "compress_inited";
 
     // ---------------------------------------------------------------- 关于「等待时长」
     //
-    // v2.18 把「收面板后先等一会儿再截屏」整个去掉了：收面板之后**立刻**截屏。
+    // 收面板之后只等 Const.SHOT_SETTLE_MS（100ms）就抓帧。那 100ms 不是等"命令返回"，
+    // 而是等**面板收起动画的第一帧翻过去**——{@code screencap} 抓的是那一刻的真实屏幕，
+    // 面板还没退干净就会被拍进去。
     //
-    // 为什么敢去掉：截屏现在走的是无障碍的 GLOBAL_ACTION_TAKE_SCREENSHOT，
-    // 那是**直接调系统的截屏动作**，不经过输入系统的按键注入，所以跟控制中心面板
-    // 收没收干净没有关系。原来那段等待是为了配合"注入按键"那条老路径（按键会被
-    // 正在收起的面板吃掉），换路径之后它就没有存在理由了。
-    //
-    // 留个记录免得以后又绕回来：老的 delay_ms 配置项还躺在 SharedPreferences 里没人读，
-    // 不用管它。
+    // 早期这里可配（150/600/1300ms），是配合"root 注入按键"那条老路的：注入的按键会被
+    // 正在收起的面板吃掉，所以要等更久。现在抓帧走 {@code screencap}，不经过输入系统，
+    // 就没有那个顾虑了；配置项 delay_ms 还躺在 SharedPreferences 里，没人读，不用管。
 
     /**
      * 记住探测到的宿主包名。
@@ -77,11 +77,17 @@ public final class Prefs {
         }
     }
 
-    /** 通知权限是否已经问过一次（只问一次，避免反复弹）。 */
+    /**
+     * 通知权限是否已经问过一次（只问一次，避免反复弹）。
+     *
+     * <p><b>默认 false</b>：全新安装从来没被问过。以前这里默认 true，
+     * 于是"初次打开自动申请"永远不会触发——用户装了模块、点了磁贴，一句提示都没有，
+     * 因为在 MIUI 上没通知权限时 Toast 直接被吞掉。
+     */
     static boolean notifAsked(Context c) {
         try {
             return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_NOTIF_ASKED, true);
+                    .getBoolean(KEY_NOTIF_ASKED, false);
         } catch (Throwable t) {
             return true;
         }
@@ -134,6 +140,57 @@ public final class Prefs {
         try {
             c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                     .edit().putInt(KEY_RAW_SWAP, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 截图要不要先压缩再交给蜜蜂记账（默认**开**）。
+     *
+     * <p>为什么默认开：这一项只影响"上传给 AI 的那份图有多大"，不改变截到的内容。
+     * 3.2MB 的 PNG 压成 JPEG 之后一般 300~500KB，上传耗时直接按比例下降；
+     * 而识别用的是同一张图（同分辨率、质量 85），正文和数字都还清楚。
+     *
+     * <p>关掉它就完全按原样写相册（PNG 原图），给"觉得识别不准"的用户留一条退路。
+     */
+    static boolean compress(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_COMPRESS, true);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    static void setCompress(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_COMPRESS, v).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 「图片压缩」是否已经做过**首次初始化**（即：raw 通道有没有校准过）。
+     *
+     * <p>为什么需要这个标记：开关默认是**开**的，所以新装的用户根本不会去"打开"它——
+     * 而校准是挂在"打开"这个动作上的，结果就是**永远不校准**，一直用 PNG 抓帧那条慢路
+     * （能用、也照样压缩，只是每次抓帧多花约 0.2 秒）。
+     * 有了这个标记，首次打开设置页时补一次**静默**校准，之后就按开关走。
+     */
+    static boolean compressInited(Context c) {
+        try {
+            return c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_COMPRESS_INITED, false);
+        } catch (Throwable t) {
+            return true;   // 读不到就当已完成，别反复跑
+        }
+    }
+
+    static void setCompressInited(Context c, boolean v) {
+        try {
+            c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_COMPRESS_INITED, v).apply();
         } catch (Throwable ignored) {
         }
     }
