@@ -168,34 +168,18 @@ final class HostWatcher {
      */
     private static void handleSuccess(Context ctx, String path, long successTs) {
         try {
-            boolean safe = RootShell.isSafeScreenshotPath(path);
-            if (!safe) {
+            if (!RootShell.isSafeScreenshotPath(path)) {
                 lastAction = "unsafe-path";
                 Logx.w("[watch] path failed safety check, not deleting: " + path);
                 HostVerdict.clearOne(path);
-            } else if (HostRoot.ensure(ctx)) {
-                if (HostRoot.delete(path)) {
-                    hostDeleteOk++;
-                    lastAction = "host-deleted";
-                    deletedPath = path;
-                    deletedAt = System.currentTimeMillis();
-                    HostVerdict.clearOne(path);
-                    HostTelemetry.put("deleted_path", path);
-                    HostTelemetry.put("deleted_at", deletedAt);
-                    scanGallery(ctx, path);
-                    // 告知模块 App（只为日志/提示，它删不删都不影响结果）
-                    broadcast(ctx, path, successTs, true, true);
-                    return;
-                }
-                lastAction = "host-delete-failed";
-            } else {
-                lastAction = "no-host-root";
+                return;
             }
-
-            // 兜底：让模块 App 自己删。系统可能延迟投递，所以这只是保底。
+            // 删图交给模块 App：图是它写进相册的、root 也在它手里，
+            // 而且它有常驻前台服务（不会被冻结），比宿主自己删更顺。
+            // 宿主只负责通知，并把结论带过去（processed=true / deleted=false）。
             pushCount++;
             broadcast(ctx, path, successTs, true, false);
-            lastAction = lastAction + "+pushed";
+            lastAction = "pushed";
         } catch (Throwable t) {
             Logx.e("[watch] handleSuccess failed", t);
         }
@@ -267,28 +251,8 @@ final class HostWatcher {
             Logx.e("[watch] ping widget failed", t);
         }
 
-        // 冗余通道：root 的 am broadcast。模块 App 退后台会被冻结，普通广播要等它解冻
-        // 才投得到；root 这条不受应用后台限制，还带 FLAG_RECEIVER_INCLUDE_BACKGROUND，
-        // 系统会直接投给后台接收器。幂等——多刷一次没有副作用。
-        // 必须在子线程：HostRoot.ensure 首次会弹授权框并阻塞。
-        try {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        if (HostRoot.ensure(ctx)) {
-                            HostRoot.broadcast(Const.ACTION_WIDGET_PING, Const.MODULE_PKG, null,
-                                    Intent.FLAG_RECEIVER_FOREGROUND
-                                            | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND);
-                        }
-                    } catch (Throwable t) {
-                        Logx.w("[watch] root widget ping failed: " + t.getMessage());
-                    }
-                }
-            }, "bee-widget-ping-root").start();
-        } catch (Throwable t) {
-            Logx.w("[watch] root widget ping thread failed: " + t.getMessage());
-        }
+        // 不再用 root 的 am broadcast 补发：宿主不需要 root 了（删图和通知都归模块）。
+        // 上面那条普通 sendBroadcast 已经够用；模块有常驻前台服务，不会被冻结。
     }
 
     /** 已经为哪一次成功推过小组件刷新，避免重复。 */
