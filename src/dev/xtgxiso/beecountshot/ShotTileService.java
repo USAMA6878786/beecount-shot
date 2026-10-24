@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.service.quicksettings.TileService;
 import android.widget.Toast;
@@ -15,22 +14,23 @@ import android.widget.Toast;
 /**
  * 控制中心「记账截图」磁贴。
  *
+ * <p><b>只有一条截屏路径：root。</b>没有 root 就直接引导用户去授权，不再退无障碍——
+ * 理由见类尾的「为什么删掉无障碍那条路」。
+ *
  * <p>点击后的完整时序（顺序不能换）：
  * <ol>
  *   <li><b>先放行</b>——必须早于截图，因为宿主是异步发现新截图的。
- *       有 root 时走两条通道：应用侧定向广播 + root 的 {@code am broadcast} 冗余通道
+ *       走两条通道：应用侧定向广播 + root 的 {@code am broadcast} 冗余通道
  *       （宿主退后台会被冻结，普通广播要等它解冻才投得到）。
  *       两条都只是"登记一张限时通行证"，且宿主侧对相同的截止时间做了去重，
  *       所以重复投递没有副作用。</li>
- *   <li><b>收面板</b>——有 root 走 {@code cmd statusbar collapse}（和上一步合并成一次 su）；
- *       没有则退回 {@code startActivityAndCollapse} + 透明中转页。</li>
+ *   <li><b>收面板</b>——{@code cmd statusbar collapse}（和上一步合并成一次 su）。</li>
  *   <li><b>立刻截屏，不等待</b>——收面板命令一返回就发截屏请求。
- *       早先这里有一段"等面板收完"的固定等待（150~1300ms 可选），v2.18 已整个删掉：
- *       那段等待是配合"root 注入按键"那条路的，而现在的截屏走无障碍直调系统动作，
- *       不经过输入系统，跟面板状态无关。</li>
- *   <li><b>截屏</b>——主路径是<b>无障碍直调</b>
- *       {@code AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT}（不经过按键注入，
- *       没有"注入被面板吃掉"的问题）；无障碍没开时才退回 root 模拟"电源键+音量下"。</li>
+ *       早先这里有一段"等面板收完"的固定等待（150~1300ms 可选），已整个删掉：
+ *       那段等待是配合"root 注入按键"那条老路的，而现在抓帧走 {@code screencap}，
+ *       不经过输入系统，跟面板状态无关（只留 100ms 躲开收起动画的第一帧）。</li>
+ *   <li><b>截屏</b>——{@code screencap} 直接抓帧（raw 通道校准过就走 raw，
+ *       更快也更容易压小）；失败才退回 root 注入"电源键+音量下"。</li>
  * </ol>
  *
  * <p>历史沿革（真机反馈驱动）：
@@ -40,101 +40,69 @@ import android.widget.Toast;
  *   <li>中间版本用过"模块 App 用 root 往宿主目录写一个放行文件"，
  *       实测 {@code su} 跑在全局挂载命名空间、看不到应用数据目录，那条路是静默失效的，
  *       已彻底移除。现在只认广播（见 {@link ArmSignal}）。</li>
- *   <li>截屏先是依赖无障碍，但应用被覆盖安装后系统会自动关掉它，于是改成 root 模拟按键；
- *       后来又发现 root 注入的按键**会被正在收起的控制面板吃掉**（约三成的点击
- *       第一次发命令没反应、要白等 1~2 秒），于是改回无障碍为主路径、
- *       并且由模块**用 root 自己把无障碍服务打开**（见
- *       {@link RootShell#ensureAccessibilityEnabled()}），root 模拟按键退居兜底。</li>
+ *   <li>截屏路径换过三次：无障碍直调 → root 注入按键 → {@code screencap} 抓帧。
+ *       无障碍那条最终被整个删掉（见类尾说明）。</li>
  * </ul>
  */
 public class ShotTileService extends TileService {
 
     /**
-     * 最近一次"点击反馈"写入副标题的时刻。
+     * 磁贴唯一的固定外观：**待命**。
      *
-     * <p>用来挡住状态查询：真机日志里出现过——点下去刚显示"正在截屏…"，
-     * 140 毫秒后就被 onStartListening 那次状态查询的结果（"已就绪 · 点一下截屏记账"）
-     * 盖掉了，用户等于看不到点击反馈。
+     * <p>它是一颗按钮，不是仪表盘。所以标签、副标题、状态三样东西都是常量：
+     * 副标题只说明"点一下干什么"，不带任何"能不能用/正在干什么"的判断。
      */
-    private static volatile long clickFeedbackAt = 0L;
-
-    /** 点击反馈在副标题上保留多久不被状态查询覆盖。 */
-    private static final long CLICK_FEEDBACK_HOLD_MS = 8000L;
+    private static final String TILE_LABEL = "记账截图";
+    private static final String TILE_SUBTITLE = "点一下截屏记账";
 
     @Override
     public void onStartListening() {
         super.onStartListening();
-
-        // 先查截屏能力：root 模拟组合键是主路径，无障碍只是退路——
-        // 所以只有在"既没 root、无障碍又没开"时才提示。注意**每次覆盖安装后
-        // 系统都会关掉无障碍服务**，这是最常见的一种"点了没反应"，
-        // 直接写在副标题上，用户下拉面板就能看到。
-        if (!ShotAccessibilityService.isReady() && !RootShell.isGranted(this)) {
-            applyTileFromProbe("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
-            return;
-        }
-
-        applyTileFromProbe("检查中…", Tile.STATE_INACTIVE);
-
-        // 副标题显示"现在能不能用"：蜜蜂记账的主界面被系统回收后它的截图监听会失效，
-        // 这时提前在下拉面板里就告诉用户，比点完再弹提示有用。
-        // 查询要走广播，不能在主线程等，所以放子线程拿到结果再刷新一次磁贴。
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    ShotBridge.Answer a = ShotBridge.query(
-                            getApplicationContext(), "", 2500L);
-                    // 走 headless 之后，蜜蜂记账在不在运行与能不能记账无关 ——
-                    // 点一下我们会自己把进程拉起来、自己起引擎派发。
-                    // 所以磁贴永远是可用状态，不再因为没连上而变灰或提示先打开。
-                    applyTileFromProbe(a.received
-                            ? "点一下截屏记账"
-                            : "点一下截屏记账 · 会自动唤醒蜜蜂记账", Tile.STATE_ACTIVE);
-                } catch (Throwable t) {
-                    Logx.w("[tile] status probe failed: " + t.getMessage());
-                }
-            }
-        }, "bee-tile-status").start();
+        ensureIdleTile();
     }
 
     /**
-     * 状态查询专用的副标题更新：**点击反馈还在展示期内就不覆盖**。
+     * 把磁贴摆回待命态；**已经对了就一个字节都不写**。
      *
-     * <p>否则会出现"刚点完、反馈一闪就变回已就绪"，用户以为没反应。
-     */
-    private void applyTileFromProbe(String subtitle, int state) {
-        long age = System.currentTimeMillis() - clickFeedbackAt;
-        if (age < CLICK_FEEDBACK_HOLD_MS) {
-            Logx.i("[tile] probe result not shown (click feedback still on, " + age
-                    + "ms ago): " + subtitle);
-            return;
-        }
-        applyTile(subtitle, state);
-    }
-
-    /**
-     * 更新磁贴外观。**可以从任意线程调**（内部会切到主线程再碰 Tile）。
+     * <p>为什么必须"没变就不调 {@code updateTile()} "：MIUI/HyperOS 的磁贴每次
+     * {@code updateTile()} 都会重绘并跑一遍状态过渡动画，哪怕内容一样。以前这里
+     * 先写「检查中…」（INACTIVE）再写「点一下截屏记账」（ACTIVE），下拉面板就能看到
+     * 图标先暗一下、再亮起来——两帧之间还夹着一次查询广播。
      *
-     * <p>顺手把副标题写进日志：这是"那一下点击到底有没有送到磁贴服务"最直接的凭据。
+     * <p>现在只写一次，而且只在真的不对的时候写（比如刚覆盖安装、系统缓存了旧外观）。
      */
-    private void applyTile(final String subtitle, final int state) {
-        final ShotTileService self = this;
+    private void ensureIdleTile() {
         new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
             public void run() {
                 try {
-                    Tile tile = self.getQsTile();
+                    Tile tile = getQsTile();
                     if (tile == null) {
                         return;
                     }
-                    tile.setState(state);
-                    tile.setLabel("记账截图");
+                    boolean changed = false;
+                    if (tile.getState() != Tile.STATE_INACTIVE) {
+                        tile.setState(Tile.STATE_INACTIVE);
+                        changed = true;
+                    }
+                    CharSequence label = tile.getLabel();
+                    if (label == null || !TILE_LABEL.contentEquals(label)) {
+                        tile.setLabel(TILE_LABEL);
+                        changed = true;
+                    }
                     if (Build.VERSION.SDK_INT >= 29) {
-                        tile.setSubtitle(subtitle);
+                        CharSequence sub = tile.getSubtitle();
+                        if (sub == null || !TILE_SUBTITLE.contentEquals(sub)) {
+                            tile.setSubtitle(TILE_SUBTITLE);
+                            changed = true;
+                        }
+                    }
+                    if (!changed) {
+                        Logx.i("[tile] appearance already idle, nothing to redraw");
+                        return;
                     }
                     tile.updateTile();
-                    Logx.i("[tile] subtitle -> " + subtitle);
+                    Logx.i("[tile] idle appearance applied");
                 } catch (Throwable t) {
                     Logx.w("[tile] update tile failed: " + t.getMessage());
                 }
@@ -143,18 +111,12 @@ public class ShotTileService extends TileService {
     }
 
     /**
-     * 请系统重新绑定磁贴并回调 {@link #onStartListening()}，副标题因此会立刻刷新成最新状态。
+     * 请系统重新绑定磁贴并回调 {@link #onStartListening()}。
      *
      * <p>为什么需要它：Android 在应用被**覆盖安装**之后，磁贴往往会被"晾着"——图标还在面板上，
      * 但绑定关系是旧的，表现出来就是"点了没反应"，过一阵子又自己好了。
-     * 主动请求一次重新监听，能让它早点恢复，也让用户下拉面板时看到的是最新状态。
-     *
-     * <p>额外好处：即使磁贴不重新绑定，{@code onStartListening} 里那次对宿主的查询也会跑一遍，
-     * 于是"蜜蜂记账截图监听不在位"这类问题会立刻显示在副标题上，而不是等用户点完才发现。
+     * 主动请求一次重新监听，能让它早点恢复成可点的状态。
      */
-    /** 连续几次点击都没能用上无障碍。到 3 次提醒用户一次。 */
-    private static volatile int a11yFailStreak = 0;
-
     static void requestRefresh(Context ctx) {
         if (ctx == null) {
             return;
@@ -188,14 +150,10 @@ public class ShotTileService extends TileService {
             }, "bee-launch-host").start();
         }
 
-        // 立刻把"收到了"画在磁贴上。这一步专门用来把两种"点了没反应"区分开：
-        //   副标题变了     → 点击送到了磁贴服务，问题在后面的截屏/记账环节；
-        //   副标题纹丝不动 → 这一下压根没送到（应用刚覆盖安装完、磁贴还没重新绑定时会这样，
-        //                    属于系统层行为，不是模块逻辑）。
-        // 上一次"点了没反应"就是后一种：日志里连一条 clicked 都没有，无从下手。
-        clickFeedbackAt = System.currentTimeMillis();
-        applyTile("正在截屏…", Tile.STATE_ACTIVE);
-        // 反馈用 Toast（截图结束后弹一句"截图成功/失败"），不再发通知。
+        // 点下去**不动磁贴**：不切成 ACTIVE、不写"正在截屏…"。
+        // 切成 ACTIVE 会让整块磁贴亮起来（看起来像在"处理中"，也像不能点了），
+        // 处理完再变回去又是一次动画。结果反馈只走 Toast（"截图成功/失败"），
+        // 磁贴自始至终是同一副待命的样子，随时可以再点。
         // 注意 Android 12+ 会丢掉后台 Toast，所以要先授悬浮窗权限，见 ShotToast。
 
         // 尽早把接收器注册好：宿主检测到记账成功时会主动广播把我们从冻结中唤醒，
@@ -212,231 +170,167 @@ public class ShotTileService extends TileService {
         try {
             final boolean root = RootShell.isGranted(app);
 
-            // 截屏的两条路：root（主）或无障碍服务（退路）。
-            //
-            // root 用 input keycombination 模拟"电源键+音量下"，走系统真实截图流程。
-            // 之所以把它做成主路径：无障碍服务在**应用被覆盖安装后会被系统自动关闭**
-            // （服务代码变了，之前那次授权作废）——以前每次更新模块，用户都会遇到
-            // "磁贴点了没反应"。有 root 就完全不依赖无障碍；两条都没有才引导去开。
-            // 引导逻辑本身也要绝对可靠，见 guideToAccessibilitySettings()。
-            if (!ShotAccessibilityService.isReady() && !root) {
-                Logx.w("[tile] no root and a11y not ready -> guiding user to enable it");
-                guideToAccessibilitySettings();
+            // 只有 root 一条路。没有 root 就直接把用户送到设置页去授权——
+            // 不再退无障碍：那条路要用户手动开服务、覆盖安装后还会被系统关掉，
+            // 而且它和 root 抓帧的产物完全不同（系统截图 vs 我们自己写相册）。
+            if (!root) {
+                Logx.w("[tile] no root -> guiding user to grant it");
+                guideToRootPermission();
                 return;
             }
             final long clickAt = System.currentTimeMillis();
             // 窗口给得宽松一点：su 开销 + 系统落库 + ContentObserver 回调都要装进去。
             final long until = clickAt + Const.ARM_GRACE_MS + 6000L;
 
-            Logx.i("[tile] root=" + root + " armWindow=+" + (until - clickAt) + "ms");
+            Logx.i("[tile] root=true armWindow=+" + (until - clickAt) + "ms");
 
             // 通道 B：广播（很快，先在主线程发出去）
             sendArmBroadcast(app, until);
 
-            if (root) {
-                // 通道 A + 收面板：都在子线程做，避免阻塞主线程（su 是阻塞调用）。
-                final ShotTileService self = this;
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        long t0 = System.currentTimeMillis();
-                        // 先解析出宿主真实包名（广播定向要用它；root 命令也用它）。
-                        HostInfo.pkg(app);
+            // 通道 A + 收面板：都在子线程做，避免阻塞主线程（su 是阻塞调用）。
+            final ShotTileService self = this;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    long t0 = System.currentTimeMillis();
+                    // 先解析出宿主真实包名（广播定向要用它；root 命令也用它）。
+                    HostInfo.pkg(app);
 
-                        // 冗余通道：再让 root 发一次放行信号。宿主退后台可能被冻结，
-                        // 普通广播要等它解冻才投得到；root 这条不受应用后台限制。
-                        // 宿主侧对相同的截止时间做了去重，所以两条一起发没有副作用。
-                        //
-                        // 这一步和下面的"收面板"合并成**一次 su**：每调一次 su 就是起一个
-                        // 新进程（实测 150~250ms），分开做等于白等两百毫秒，而这段时间
-                        // 直接算在"点击→截屏"的延迟里。
-                        // 标记路径先备好，交给 armAndCollapse 顺带立起来（省一次 su）
-                        final String mark = RootShell.newMark();
-                        RootShell.Result r = RootShell.armAndCollapse(Const.ACTION_ARM, HostInfo.pkg(),
-                                "--el " + Const.EXTRA_UNTIL + " " + until
-                                        + " --ez " + Const.EXTRA_PRECISE + " "
-                                        + "true"
-                                        + " --ez " + Const.EXTRA_AUTO_DELETE + " "
-                                        + (Prefs.autoDelete(app) ? "true" : "false"),
-                                Intent.FLAG_RECEIVER_FOREGROUND
-                                        | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND, mark);
-                        long spent = System.currentTimeMillis() - t0;
-                        Logx.i("[tile] root stage finished in " + spent + "ms, exit=" + r.exit);
+                    // 冗余通道：再让 root 发一次放行信号。宿主退后台可能被冻结，
+                    // 普通广播要等它解冻才投得到；root 这条不受应用后台限制。
+                    // 宿主侧对相同的截止时间做了去重，所以两条一起发没有副作用。
+                    //
+                    // 这一步和下面的"收面板"合并成**一次 su**：每调一次 su 就是起一个
+                    // 新进程（实测 150~250ms），分开做等于白等两百毫秒，而这段时间
+                    // 直接算在"点击→截屏"的延迟里。
+                    // 注意：这里不再立"标记文件"了。它原来是给无障碍那条路
+                    // （waitForNewShot）判断"有没有出新图"用的；那条路删掉之后，
+                    // 标记就没人读了，白多一次 touch。
+                    RootShell.Result r = RootShell.armAndCollapse(Const.ACTION_ARM, HostInfo.pkg(),
+                            "--el " + Const.EXTRA_UNTIL + " " + until
+                                    + " --ez " + Const.EXTRA_PRECISE + " "
+                                    + "true"
+                                    + " --ez " + Const.EXTRA_AUTO_DELETE + " "
+                                    + (Prefs.autoDelete(app) ? "true" : "false"),
+                            Intent.FLAG_RECEIVER_FOREGROUND
+                                    | Const.FLAG_RECEIVER_INCLUDE_BACKGROUND, null);
+                    long spent = System.currentTimeMillis() - t0;
+                    Logx.i("[tile] root stage finished in " + spent + "ms, exit=" + r.exit);
 
-                        if (r.exit != 0) {
-                            // root 收起失败（个别 ROM 没有 cmd statusbar）——退回非 root 方案。
-                            Logx.w("[tile] root collapse failed, falling back to activity collapse");
-                            self.collapseByActivity();
-                        }
+                    if (r.exit != 0) {
+                        // root 收起失败（个别 ROM 没有 cmd statusbar）——退回非 root 方案。
+                        Logx.w("[tile] root collapse failed, falling back to activity collapse");
+                        self.collapseByActivity();
+                    }
 
-                        // **不再等待**：收起面板的命令一返回就立刻截屏。
-                        //
-                        // v2.18 把「收面板后先等一会儿再截屏」整个去掉了。那段等待原本是配合
-                        // "root 注入按键"那条老路径的——注入的按键会被正在收起的面板吃掉，
-                        // 所以要等面板收干净。现在截屏走无障碍直调系统的截屏动作，不经过
-                        // 按键注入、跟面板状态无关，等待就没有存在理由了。
-                        //
-                        // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
-                        // 收面板命令返回后问一下要不要再等一下（见 Const.SHOT_SETTLE_MS）。
-                        // 现在是 0 —— 收面板命令一返回就抓帧，最快。
-                        if (Const.SHOT_SETTLE_MS > 0L) {
-                            try {
-                                Thread.sleep(Const.SHOT_SETTLE_MS);
-                            } catch (InterruptedException ignored) {
-                            }
-                        }
-                        final boolean a11yReady = ShotAccessibilityService.isReady();
-                        Logx.i("[tile] 截屏（收面板后等了 " + Const.SHOT_SETTLE_MS + "ms）a11y=" + a11yReady);
-
-                        // 连续几次都用不上无障碍 -> 提醒用户去重开。
-                        // （否则用户只知道「有点慢」，不知道是截屏服务掉了。）
-                        if (a11yReady) {
-                            a11yFailStreak = 0;
-                        } else if (++a11yFailStreak == 3) {
-                            KeepAliveService.notifyA11yLost(app);
-                        }
-                        final long shotAt = System.currentTimeMillis();
-
-                        // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
-                        // 必须在**截屏之前**就起好，否则可能错过删除窗口。
-                        if (Prefs.autoDelete(app)) {
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    ShotCleaner.submit(app, shotAt);
-                                }
-                            }, "bee-shot-cleaner").start();
-                        } else {
-                            Logx.i("[tile] auto-delete is OFF; screenshot will be kept");
-                        }
-
-                        // ---- 截屏 ----
-                        //
-                        // 主路径：**无障碍直调系统截屏动作**。它不走输入系统的按键注入，
-                        // 所以不会和控制中心面板的收起动画抢时间——真机上这是唯一稳定的那条路：
-                        // 原先用 root 模拟按键时，"第一次发命令毫无反应、白等 2 秒再换一条"
-                        // 大约三成点击会踩到，表现就是"点了要等好久才开始截图"。
-                        //
-                        // 退路：root 模拟"电源键+音量下"（原来的做法，保留兜底）。
-                        boolean sent = false;
-                        String via = "none";
-
-                        // ---- 主路径：root 直接抓帧（v2.28 真机验证通过）----
-                        //
-                        // 不走按键注入（按键会被收起中的控制中心吃掉）、
-                        // 也不走无障碍（服务会掉线）——抓完自己往相册插一条截图，
-                        // 蜜蜂记账的观察者照常收到通知。
-                        // 任何一步失败都返回 null，自动退回下面两条老路。
-                        if (ScreencapShot.isAvailable(app)) {
-                            long sc0 = System.currentTimeMillis();
-                            String p = ScreencapShot.take(app);
-                            if (p != null) {
-                                sent = true;
-                                via = "screencap";
-                                Logx.i("[tile] 截图路径=screencap 成功（"
-                                        + (System.currentTimeMillis() - sc0) + "ms）");
-                            } else {
-                                Logx.w("[tile] screencap 失败 -> 退回原链路");
-                            }
-                        }
-
-                        if (!sent && a11yReady) {
-                            boolean accepted = ShotAccessibilityService.shootNow();
-                            long w0 = System.currentTimeMillis();
-                            boolean landed = accepted && RootShell.waitForNewShot(1500L, mark);
-                            RootShell.clearMark(mark);
-                            // 无障碍这条路的成败以前只写了个 accepted，没有明确的成败行，
-                            // 导致日志里一大堆 a11y 点击看起来像"没有出图记录"，没法排查。
-                            Logx.i("[tile] a11y 直调：accepted=" + accepted + " 出图=" + landed
-                                    + "（等待 " + (System.currentTimeMillis() - w0) + "ms）");
-                            if (accepted && !landed) {
-                                Logx.w("[tile] a11y 受理了但没等到新图 -> 退回 root 模拟按键");
-                            }
-                            sent = landed;
-                        } else {
-                            Logx.i("[tile] 无障碍未就绪 -> 走 root 模拟按键");
-                        }
-                        if (!sent) {
-                            sent = RootShell.takeScreenshotViaRoot();
-                            if (sent) {
-                                via = "root-input";
-                            }
-                        }
-                        Logx.i("[tile] 截图结果：路径=" + via + " 成功=" + sent);
-
-                        // 用户只要知道"截图成没成"——一句话 Toast 就够。
-                        if (sent) {
-                            ShotToast.ok(app);
-                        } else {
-                            ShotToast.fail(app, "三条路都没成功");
-                        }
-
-                        // 「无障碍没就绪就去把它打开」这件事**放到截屏之后再后台做**。
-                        //
-                        // 原来它写在截屏之前的关键路径上，实测每次白花 210ms
-                        // （`ensure a11y enabled -> ALREADY`），而这次点击无论如何都还是走
-                        // root——它只影响"下一次"。挪走之后这一段直接省下来。
-                        if (!a11yReady) {
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    try {
-                                        RootShell.ensureAccessibilityEnabled();
-                                    } catch (Throwable t) {
-                                        Logx.w("[tile] ensure a11y failed: " + t.getMessage());
-                                    }
-                                }
-                            }, "bee-ensure-a11y").start();
-                        }
-
-                        // 把结果写回磁贴副标题。这样"点了没反应"永远有一个看得见的落点：
-                        // 副标题停在"正在截屏…"说明流程中途断了，日志里对应位置会有报错。
-                        clickFeedbackAt = System.currentTimeMillis();
-                        if (sent) {
-                            applyTile("已截屏 · 等蜜蜂记账处理", Tile.STATE_INACTIVE);
-                        } else {
-                            applyTile("截屏失败 · 请导出日志", Tile.STATE_UNAVAILABLE);
-                        }
-
-                        // 截屏之后等一会儿，把 logcat 快照落到 Download。
-                        // 这一步是为了"失败现场"：logcat 会轮转，等用户发现问题再去导就晚了。
-                        // 两个进程的日志都在里面（tag=BeeShot），成没成一目了然。
+                    // **不再等待**：收起面板的命令一返回就立刻截屏。
+                    //
+                    // v2.18 把「收面板后先等一会儿再截屏」整个去掉了。那段等待原本是配合
+                    // "root 注入按键"那条老路径的——注入的按键会被正在收起的面板吃掉，
+                    // 所以要等面板收干净。现在截屏走无障碍直调系统的截屏动作，不经过
+                    // 按键注入、跟面板状态无关，等待就没有存在理由了。
+                    //
+                    // 「收起面板」这个动作本身**保留**：不收的话控制面板会出现在截图里。
+                    // 收面板命令返回后问一下要不要再等一下（见 Const.SHOT_SETTLE_MS）。
+                    // 现在是 0 —— 收面板命令一返回就抓帧，最快。
+                    if (Const.SHOT_SETTLE_MS > 0L) {
                         try {
-                            Thread.sleep(4000L);
+                            Thread.sleep(Const.SHOT_SETTLE_MS);
                         } catch (InterruptedException ignored) {
                         }
-                        Logx.i("[tile] dumping logcat snapshot for this attempt");
+                    }
+                    Logx.i("[tile] 截屏（收面板后等了 " + Const.SHOT_SETTLE_MS + "ms）");
+                    final long shotAt = System.currentTimeMillis();
+
+                    // 记账成功后自动删截图（独立的观察线程，不阻塞截屏）。
+                    // 必须在**截屏之前**就起好，否则可能错过删除窗口。
+                    if (Prefs.autoDelete(app)) {
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                ShotCleaner.submit(app, shotAt);
+                            }
+                        }, "bee-shot-cleaner").start();
+                    } else {
+                        Logx.i("[tile] auto-delete is OFF; screenshot will be kept");
+                    }
+
+                    // ---- 截屏 ----
+                    //
+                    // 主路径：root 直接抓帧（raw 通道校准过走 raw，否则 PNG）。
+                    // 抓完自己往相册插一条截图，蜜蜂记账的观察者照常收到通知。
+                    // 失败只有一种兜底：root 注入"电源键+音量下"（系统真实截图流程）。
+                    boolean sent = false;
+                    String via = "none";
+
+                    if (ScreencapShot.isAvailable(app)) {
+                        long sc0 = System.currentTimeMillis();
+                        String p = ScreencapShot.take(app);
+                        if (p != null) {
+                            sent = true;
+                            via = "screencap";
+                            Logx.i("[tile] 截图路径=screencap 成功（"
+                                    + (System.currentTimeMillis() - sc0) + "ms）");
+                        } else {
+                            Logx.w("[tile] screencap 失败 -> 退回 root 注入按键");
+                        }
+                    }
+
+                    if (!sent) {
+                        sent = RootShell.takeScreenshotViaRoot();
+                        if (sent) {
+                            via = "root-input";
+                        }
+                    }
+                    Logx.i("[tile] 截图结果：路径=" + via + " 成功=" + sent);
+
+                    // 用户只要知道"截图成没成"——一句话 Toast 就够。
+                    if (sent) {
+                        ShotToast.ok(app);
+                    } else {
+                        ShotToast.fail(app, "截屏失败");
+                    }
+
+                    // 结果不再写回磁贴：成功有 Toast「截图成功」，失败有「截图失败」。
+                    // 磁贴保持待命外观，不给它任何"状态"含义，也就没有可点不了的时候。
+
+                    // 只有**这次没截到图**才落 logcat 快照。
+                    // 原来是每次点击都等 4 秒再开一次 su 把 logcat 写进 Download——
+                    // 成功的点击（绝大多数）纯属白费：多一次 su、多 4 秒线程、多一次写盘。
+                    // 失败现场才是真正需要它的地方，日志当场落盘，等用户发现问题再看也还在。
+                    if (!sent) {
+                        try {
+                            Thread.sleep(2000L);
+                        } catch (InterruptedException ignored) {
+                        }
+                        Logx.i("[tile] capture failed, dumping logcat snapshot");
                         RootShell.appendLogcatToDownload();
                     }
-                }, "bee-shot-orchestrator").start();
-            } else {
-                Logx.i("[tile] no root -> using startActivityAndCollapse");
-                collapseByActivity();
-                Logx.i("[tile] 立刻截屏（不等待）");
-                ShotAccessibilityService.scheduleShot(0);
-            }
+                }
+            }, "bee-shot-orchestrator").start();
         } catch (Throwable t) {
             Logx.e("[tile] onClick failed", t);
         }
     }
 
     /**
-     * 截屏服务没开时，把用户送到"无障碍设置"页。
+     * 没有 root 时，把用户送到设置页去授权。
      *
-     * <p><b>这段代码曾经把用户坑惨了</b>，所以两条保障缺一不可：
+     * <p>为什么不是直接弹 root 请求：{@code su} 的授权框属于 root 管理器，
+     * 从磁贴（后台）发起时机很不稳，而且新装的模块还没被 LSPosed 作用域信任时更容易被静默拒绝。
+     * 送到设置页，用户点一下「root 权限」按钮，路径最确定。
      *
+     * <p><b>两个坑必须绕开</b>（都踩过）：
      * <ol>
      *   <li>Android 14（API 34）起**禁止 TileService 用 Intent 调
      *       {@code startActivityAndCollapse}**，会抛
-     *       {@code UnsupportedOperationException: Starting activity from TileService
-     *       using an Intent is not allowed}。必须改用 {@code PendingIntent} 版本。</li>
-     *   <li>兜底的 Toast 也靠不住：Android 12 起后台应用发的 Toast 会被系统直接丢掉，
-     *       而磁贴点击未必算"前台"。所以兜底改成**直接改磁贴自己的副标题**
-     *       （此刻面板就开着，用户一定看得见），不依赖任何权限。</li>
+     *       {@code UnsupportedOperationException}。必须用 {@code PendingIntent} 版本。</li>
+     *   <li>兜底的 Toast 靠不住：Android 12 起后台应用发的 Toast 会被丢，
+     *       而磁贴点击未必算"前台"。所以磁贴外观一律不动，只做"送到设置页"这一件事。</li>
      * </ol>
      */
-    private void guideToAccessibilitySettings() {
-        Intent settings = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+    private void guideToRootPermission() {
+        Intent settings = new Intent(this, SettingsActivity.class);
         settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             if (Build.VERSION.SDK_INT >= 34) {
@@ -446,15 +340,14 @@ public class ShotTileService extends TileService {
             } else {
                 startActivityAndCollapse(settings);
             }
-            Logx.i("[tile] guided user to accessibility settings");
+            Logx.i("[tile] no root, guided user to settings");
             return;
         } catch (Throwable t) {
-            Logx.e("[tile] startActivityAndCollapse failed, fallback to tile text", t);
+            Logx.e("[tile] startActivityAndCollapse failed, fallback to toast", t);
         }
-        // 最后一道保险：把状态写回磁贴自己，面板此刻就开着，用户一定看得见。
-        applyTile("截屏服务未开启 · 点一下去开启", Tile.STATE_UNAVAILABLE);
         try {
-            Toast.makeText(this, "请先开启「记账截图」的截屏服务", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "点一下磁贴记账需要 root：请打开「记账截图」并点「root 权限」",
+                    Toast.LENGTH_LONG).show();
         } catch (Throwable ignored) {
         }
     }
@@ -476,12 +369,13 @@ public class ShotTileService extends TileService {
     }
 
     /**
-     * 非 root 的收面板方案：借 {@code startActivityAndCollapse} 启动一个透明页。
+     * 收面板的兜底方案：root 的 {@code cmd statusbar collapse} 失败时（个别 ROM 没有这个命令），
+     * 借 {@code startActivityAndCollapse} 启动一个透明页把面板顶掉。
      *
-     * <p>和 {@link #guideToAccessibilitySettings()} 一样受 Android 14 的限制：
+     * <p>和 {@link #guideToRootPermission()} 一样受 Android 14 的限制：
      * API 34 起 {@code startActivityAndCollapse(Intent)} 直接抛
      * {@code UnsupportedOperationException}，必须用 {@code PendingIntent} 版本。
-     * 这里如果漏改，无 root 的用户点击磁贴会**静默无反应**。
+     * 这里如果漏改，root 收面板失败的那次点击会**静默无反应**。
      */
     private void collapseByActivity() {
         new Handler(Looper.getMainLooper()).post(new Runnable() {
