@@ -45,6 +45,12 @@ final class HostWatcher {
 
     static void setAutoDelete(boolean v) {
         autoDelete = v;
+        Logx.i("[watch] auto-delete = " + v + "（来自模块设置页）");
+    }
+
+    /** 当前是否允许删图。**宿主进程里唯一可信的来源**：ARM 广播带过来的值。 */
+    static boolean autoDeleteEnabled() {
+        return autoDelete;
     }
 
     private static volatile String deletedPath = "";
