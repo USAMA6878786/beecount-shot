@@ -33,7 +33,7 @@ import java.util.Locale;
  * 写入媒体库拿到 uri；读回 {@code _id} / {@code DISPLAY_NAME} / {@code DATE_ADDED} / {@code SIZE} 都正常。
  *
  * <h3>失败时</h3>
- * 任何一步失败都返回 {@code null}，调用方自动退回无障碍 / 按键注入那条老路。
+ * 任何一步失败都返回 {@code null}，调用方自动退回 root 注入按键那条兜底路（唯一兜底）。
  * **换路径不等于去掉退路。**
  */
 final class ScreencapShot {
