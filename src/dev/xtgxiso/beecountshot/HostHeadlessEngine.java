@@ -394,6 +394,34 @@ final class HostHeadlessEngine {
         lastDispatched = null;
     }
 
+    /**
+     * 请**模块 App** 去删这张图（不再用宿主自己的 root）。
+     *
+     * <p>为什么改成这样：删图那一步原来是宿主进程里 `su rm`，等于要求蜜蜂记账也拿到 root。
+     * 但图是模块写进相册的、root 也在模块手里，让模块删更顺；宿主只负责"通知一声"。
+     * 走 {@link Const#ACTION_RESULT}（processed=true / deleted=false）——
+     * 模块侧收到就立刻删，不需要等它自己的清理周期。
+     */
+    private static void pushDeleteToModule(String path) {
+        try {
+            if (path == null || path.length() == 0) {
+                return;
+            }
+            android.content.Intent it = new android.content.Intent(Const.ACTION_RESULT);
+            it.setPackage(Const.MODULE_PKG);
+            it.putExtra(Const.EXTRA_DECISIVE, true);
+            it.putExtra(Const.EXTRA_PATH, path);
+            it.putExtra(Const.EXTRA_PROCESSED, true);
+            it.putExtra(Const.EXTRA_SUCCESS, true);
+            it.putExtra(Const.EXTRA_DELETED, false);
+            it.addFlags(android.content.Intent.FLAG_RECEIVER_FOREGROUND);
+            appCtx.sendBroadcast(it);
+            Logx.i("[headless] 请模块删图：" + RootShell.baseName(path));
+        } catch (Throwable t) {
+            Logx.w("[headless] 通知模块删图失败：" + t.getMessage());
+        }
+    }
+
     private static String newestShot() {
         try {
             RootShell.Result r = RootShell.exec(
@@ -622,7 +650,7 @@ final class HostHeadlessEngine {
                                         // 这个进程自己的一份静态状态，和模块 App 里的那个不是同一个对象。
                                         // 所以不能在这里"撤销任务"——那只会操作一个空队列。
                                         // 模块侧靠"扫盘为空就收工"提前结束（见 ShotCleaner 的扫盘段）。
-                                        ShotCleaner.deleteAfterHeadless(appCtx, p);
+                                        pushDeleteToModule(p);
                                     }
                                 }, "bee-headless-clean").start();
                             } else if ("error".equals(n)) {
@@ -671,7 +699,7 @@ final class HostHeadlessEngine {
                 public void run() {
                     if (!wdPath.equals(cleanedPath)) {
                         Logx.w("[headless] 20 秒没回执，兜底删图：" + RootShell.baseName(wdPath));
-                        ShotCleaner.deleteAfterHeadless(appCtx, wdPath);
+                        pushDeleteToModule(wdPath);
                     }
                 }
             }, 20_000L);
