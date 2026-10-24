@@ -11,7 +11,7 @@ import android.content.Context;
  * 实测（20:56，pid 从空 → 20148）：拉起后模块的 hook 全部初始化，root 也拿到了。
  *
  * <h3>它能做到什么，做不到什么</h3>
- * <b>能做到</b>：宿主进程回来了 → 桌面小组件恢复实时数字、设置页状态点变绿、
+ * <b>能做到</b>：宿主进程回来了 → 桌面小组件恢复实时数字、
  * 后续的探测/判定链路能正常应答。
  *
  * <p><b>做不到</b>：让截图被识别。识别要它的 Flutter/Dart 跑起来，而 Dart 只在
@@ -48,9 +48,13 @@ final class HostLauncher {
             return false;
         }
         ctx0 = ctx;
-        ctx0 = ctx;
         long now = System.currentTimeMillis();
         if (now - lastTryAt < DEBOUNCE_MS) {
+            // 3 秒内刚拉过一次：进程多半还活着，**但这一张也必须派发**。
+            // 这里原来直接 return false，导致连点（<3 秒）时每隔一次点击就被整丢——
+            // 实测 10 次点击只派发了 5 次，用户点了却没记账。
+            Logx.i("[launch] 3 秒内拉过，跳过广播，但仍请求派发这一张");
+            requestHeadlessDispatch(ctx);
             return false;
         }
         lastTryAt = now;
@@ -126,6 +130,10 @@ final class HostLauncher {
         try {
             android.content.Intent it = new android.content.Intent(Const.ACTION_HEADLESS);
             it.setPackage(pkg);
+            // 把「识别后删除截图」的开关一起带上：无界面引擎跑在宿主进程里，
+            // 那边读不到模块的 SharedPreferences（读到的是宿主的，默认 true），
+            // 不带这个值的话——无论开关关没关，它都会删图。
+            it.putExtra(Const.EXTRA_AUTO_DELETE, Prefs.autoDelete(ctx));
             ctx.sendBroadcast(it);
             Logx.i("[launch] 已请求无界面派发");
         } catch (Throwable t) {
