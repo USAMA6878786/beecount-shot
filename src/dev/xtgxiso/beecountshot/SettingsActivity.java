@@ -5,7 +5,6 @@ import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.graphics.Color;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,9 +12,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -28,23 +24,19 @@ import java.util.concurrent.Executor;
  * 模块设置页。界面用代码搭（不用布局 XML），减少资源依赖，打包链更简单。
  *
  * <p>三块内容：把磁贴/小部件加到系统里、把权限给足、按需调参数；再往下是日志与诊断。
- * 所有"需要问宿主才知道的状态"（hook 有没有装上、截图监听在不在位）都通过广播查询，
- * 因为模块 App 用 root 读不到宿主的私有数据。
+ *
+ * <p>页面**不展示自检结果**。走 headless 之后「进程在不在、hook 装了几条、监听在不在位」
+ * 都已经不影响能不能记账（点磁贴时自己拉起进程、自己起引擎派发），把这几项摆在最上面
+ * 只会让用户去追一个不影响结果的红点。真正需要用户动手的只有 root，而没 root 时
+ * 一按磁贴就会有提示，不需要靠首页状态去提醒。
  */
 public class SettingsActivity extends Activity {
 
-    private TextView statusView;
-    /** 状态卡第二行：一行冰冷的事实（root / hook / 无障碍 / 监听）。 */
-    private TextView statusFacts;
-
-    /** 主动重启宿主的窗口期。这期间状态显示"正在重启"而不是"连不上"。 */
+    /** 主动重启宿主的窗口期。这期间会反复重探宿主，直到它答复。 */
     private volatile long restartingUntil = 0L;
 
-    /** 来自宿主的实时状态（后台查询后刷新）。 */
+    /** 上一次探测宿主有没有答复（只用于"重启窗口期内继续重探"这一段逻辑）。 */
     private volatile boolean hostAnswered = false;
-    private volatile boolean activityAlive = false;
-    private volatile int hookCount = -1;
-    private volatile int hookFailed = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -69,15 +61,10 @@ public class SettingsActivity extends Activity {
         root.addView(Ui.caption(this, "v" + versionName() + " · 点磁贴才记账"),
                 Ui.lp(-1, -2, 0, 0, 0, 14));
 
-        // ---------------- 状态 ----------------
-        LinearLayout statusCard = Ui.card(this, root, null);
-        statusView = new TextView(this);
-        statusView.setTextSize(14.5f);
-        statusView.setLineSpacing(Ui.dp(this, 3), 1f);
-        statusCard.addView(statusView);
-        statusFacts = Ui.caption(this, "");
-        statusCard.addView(statusFacts, Ui.lp(-1, -2, 0, 4, 0, 0));
-
+        // ---------------- 操作 ----------------
+        // 这里原来是一张"自检"状态卡：● 就绪 / root ✓ · 无障碍 ✓。
+        // 现在整块展示去掉，只留两个会真正改变状态的动作按钮。
+        LinearLayout actionCard = Ui.card(this, root, null);
         LinearLayout statusActions = new LinearLayout(this);
         statusActions.setOrientation(LinearLayout.HORIZONTAL);
         TextView bRestart = Ui.filledButton(this, "重启蜜蜂记账", new View.OnClickListener() {
@@ -99,23 +86,10 @@ public class SettingsActivity extends Activity {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         half2.leftMargin = Ui.dp(this, 8);
         statusActions.addView(bRoot, half2);
-        statusCard.addView(statusActions, Ui.lp(-1, -2, 0, 12, 0, 0));
-        // 先渲染一次，避免探测回调到达前状态卡是空白
-        refreshStatus();
+        actionCard.addView(statusActions);
 
         // 让磁贴尽早重新绑定（打开设置页是个自然时机）
         ShotTileService.requestRefresh(this);
-
-        // 无障碍没开就用 root 帮用户打开（它是第二截屏路径）
-        if (!ShotAccessibilityService.isReady()) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    RootShell.ensureAccessibilityEnabled();
-                    ShotTileService.requestRefresh(SettingsActivity.this);
-                }
-            }, "bee-ensure-a11y").start();
-        }
 
         // 先把通知渠道建出来，否则系统设置里"允许通知"是灰的
         KeepAliveService.ensureChannel(this);
@@ -144,10 +118,8 @@ public class SettingsActivity extends Activity {
             }
         }));
         tileCard.addView(tileRow);
-        if (ShotAccessibilityService.isReady()) {
-            tileCard.addView(Ui.caption(this, "截屏走 root 抓帧；无障碍已开启，作为第二条路径"),
-                    Ui.lp(-1, -2, 0, 6, 0, 0));
-        }
+        tileCard.addView(Ui.caption(this, "截屏走 root 直接抓帧，约 0.25 秒"),
+                Ui.lp(-1, -2, 0, 6, 0, 0));
 
         // ---------------- 行为 ----------------
         LinearLayout behaviorCard = Ui.card(this, root, "行为");
@@ -161,7 +133,7 @@ public class SettingsActivity extends Activity {
                         if (on) {
                             KeepAliveService.ensureChannel(SettingsActivity.this);
                             KeepAliveService.start(SettingsActivity.this);
-                            requestNotifPermissionIfNeeded();
+                            askNotificationPermission(false);
                         } else {
                             KeepAliveService.stop(SettingsActivity.this);
                         }
@@ -195,21 +167,21 @@ public class SettingsActivity extends Activity {
             }, 600L);
         }
 
-        TextView bColor = Ui.tonalButton(this, "颜色校准", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startActivity(new Intent(SettingsActivity.this, ColorProbeActivity.class));
-            }
-        });
-        speedCard.addView(bColor, Ui.buttonLp(this, false));
-
-        TextView bProbe = Ui.outlinedButton(this, "检查截屏链路", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                runScreencapProbe();
-            }
-        });
-        speedCard.addView(bProbe, Ui.buttonLp(this, false));
+        // 原来的「颜色校准」「检查截屏链路」两个按钮合并成这一个开关：
+        // 打开时自动跑一次真抓帧 + 真压缩的自检（抓不到屏/压不动都会直说），
+        // 跑通之后每张截图都先压再交出去。关掉就完全按原图。
+        Ui.switchRow(this, speedCard, "图片压缩",
+                "截图先压成 JPEG 再交给蜜蜂记账，上传识别更快",
+                Prefs.compress(this), new Ui.OnToggle() {
+                    @Override
+                    public void onToggle(boolean on) {
+                        Prefs.setCompress(SettingsActivity.this, on);
+                        Logx.i("[settings] compress set to " + on);
+                        if (on) {
+                            runCompressCheck();
+                        }
+                    }
+                });
 
         // ---------------- 小组件 ----------------
         LinearLayout widgetCard = Ui.card(this, root, "桌面小组件");
@@ -267,9 +239,66 @@ public class SettingsActivity extends Activity {
                 runDiagnostics();
             }
         });
+        Ui.listItem(this, helpCard, "检查更新", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                checkUpdate();
+            }
+        });
+        // 首次打开就申请通知权限（没有它，截图成功/失败的 Toast 会被系统吞掉）。
+        // 「帮助」里不再放那一行状态：授权本身只在第一次打开时需要，之后它在不在
+        // 都不影响截图和记账，摆在页面上只会让人去研究一个不影响结果的开关。
+        askNotificationPermission(true);
+
+        // 压缩默认是开的，但"校准 raw 通道"挂在"打开开关"这个动作上——
+        // 默认开就意味着新装用户永远不会触发它。所以这里补一次（只跑一次，静默）。
+        maybeInitCompress();
 
         // 打开后立刻探一次宿主状态
         probeHost();
+    }
+
+    /**
+     * 首次打开的收尾：如果「图片压缩」开着但 raw 通道从没校准过，**静默**校准一次。
+     *
+     * <p>为什么需要它：{@link Prefs#compress} 默认 true，用户不会去拨这个开关，
+     * 于是 {@link #runCompressCheck()} 永远不触发，`rawSwap` 一直是 -1，
+     * 截屏就一直走 PNG 抓帧（照样压缩、照样记账，只是每次抓帧多花约 0.2 秒）。
+     *
+     * <p>这里只做校准、不弹框：刚装完模块的人不需要看一份"检测报告"；
+     * 真要看，他自己关一次再打开开关就会走到 {@link #runCompressCheck()}。
+     * 没 root 时**不置位**，下次打开设置页再试。
+     */
+    private void maybeInitCompress() {
+        if (!Prefs.compress(this) || Prefs.compressInited(this)) {
+            return;
+        }
+        if (Prefs.rawSwap(this) >= 0) {
+            // 已经校准过（老用户升级上来），直接记为已初始化
+            Prefs.setCompressInited(this, true);
+            return;
+        }
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!RootShell.isGranted(SettingsActivity.this)) {
+                            Logx.i("[settings] 压缩首次初始化：还没 root，等下次打开再试");
+                            return;   // 不置位，下次再试
+                        }
+                        RawCalibrate.Result r = RawCalibrate.calibrate(SettingsActivity.this);
+                        Logx.i("[settings] 压缩首次初始化：" + r.verdict
+                                + (r.detail.length() > 0 ? "｜" + r.detail : ""));
+                        if (r.decided) {
+                            Prefs.setCompressInited(SettingsActivity.this, true);
+                            ShotTileService.requestRefresh(SettingsActivity.this);
+                        }
+                    }
+                }, "bee-compress-init").start();
+            }
+        }, 1800L);   // 等页面入场动画走完再抓帧：否则参照图和 raw 不是同一画面
     }
 
     /** 统一的文本弹窗（把长说明从页面上挪走，保持界面清爽）。 */
@@ -287,27 +316,26 @@ public class SettingsActivity extends Activity {
             + "• LSPosed 里启用本模块，作用域勾选「蜜蜂记账」\n"
             + "• 给本模块 root（截屏、收面板、删图都要用）\n"
             + "• 进一次蜜蜂记账的「智能记账」，确认截图监听已开启\n\n"
-            + "截屏是三级降级：\n"
-            + "① root 抓帧（主路径，约 0.25 秒）\n"
-            + "② 无障碍直调系统截屏\n"
-            + "③ root 模拟按键（兜底）\n\n"
-            + "整个过程：收起面板 → 等 0.15 秒 → 截屏 → 弹「截图成功」→ 蜜蜂记账识别 → 识别完成后删图。\n\n"
-            + "从点击到删图实测约 10 秒，大头在蜜蜂记账自己的检测与 AI 识别（3~5 秒）。";
+            + "截屏只有一条路：root 直接抓帧（约 0.25 秒）；抓帧失败才退回 root 注入按键。\n\n"
+            + "整个过程：收起面板 → 等 0.1 秒 → 截屏 → 弹「截图成功」→ 蜜蜂记账识别 → 识别完成后删图。\n\n"
+            + "从点击到删图实测约 5~7 秒，大头在蜜蜂记账自己的检测与 AI 识别（3~5 秒）。";
 
     /** 常见问题。 */
     private static final String FAQ =
             "点了磁贴没反应？\n"
-            + "① 看顶部状态和磁贴副标题；② root 是否授权；"
+            + "① 点「root 权限」看是否已授权；② 有没有看到「截图成功 / 失败」的提示"
+            + "（没给通知权限时这个提示会被系统吞掉，去系统设置里给「记账截图」打开通知即可）；"
             + "③ 蜜蜂记账的截图监听是否开着（进「智能记账」确认）。\n\n"
             + "改了配置不生效？\n"
             + "hook 只在蜜蜂记账启动时注入，点「重启蜜蜂记账」。\n\n"
             + "截到的图里带控制中心？\n"
-            + "说明这台机器收面板太慢。把 Const.SHOT_SETTLE_MS 从 0 改成 100~200 即可。\n\n"
+            + "说明这台机器收面板特别慢。这个等待是编译期常量（Const.SHOT_SETTLE_MS），"
+            + "要改得重新打包——把日志发我即可。\n\n"
             + "小部件数字是灰色的？\n"
             + "蜜蜂记账进程没在跑，显示的是上次的值；打开一次它即可。\n\n"
-            + "能不用打开蜜蜂记账就自动记账吗？\n"
-            + "做不到。它的截图监听挂在界面上，界面被回收就得重新打开一次。"
-            + "（推消息、分享、深链三条路都实测证否。）";
+            + "要打开蜜蜂记账才能记账吗？\n"
+            + "不用。点磁贴时模块会自己把它的进程拉起来、起一个**无界面引擎**把截图送进去识别，"
+            + "全程不显示它的界面、也不会把它弹到前台。";
 
     @Override
     protected void onResume() {
@@ -315,9 +343,15 @@ public class SettingsActivity extends Activity {
         probeHost();
     }
 
-    // ------------------------------------------------------------ 宿主状态
+    // ------------------------------------------------------------ 宿主
 
-    /** 后台问一次宿主：hook 装了几条、截图监听在不在位。 */
+    /**
+     * 问一次宿主还在不在；不在就顺手把它叫回来。
+     *
+     * <p>这个结果**不上屏**了（页面不再展示自检），它只干一件事：
+     * 宿主进程没在跑时，用小组件的广播把进程拉起来——这样桌面小组件的数字是实时的，
+     * 点磁贴也不用再等一次冷启动。整个过程不显示任何界面。
+     */
     private void probeHost() {
         new Thread(new Runnable() {
             @Override
@@ -327,13 +361,9 @@ public class SettingsActivity extends Activity {
                     ShotBridge.Answer a = ShotBridge.query(
                             getApplicationContext(), "", 3000L);
                     hostAnswered = a.received;
-                    if (a.received) {
-                        activityAlive = a.activityAlive;
-                        hookCount = a.hookCount;
-                        hookFailed = a.hookFailed;
-                    } else if (HostLauncher.pullUp(SettingsActivity.this)) {
+                    if (!a.received && HostLauncher.pullUp(SettingsActivity.this)) {
                         // 宿主进程不在 —— 用它的"桌面小组件 provider"广播叫回来。
-                        // 这不显示任何界面，只是让进程活着（小组件恢复实时、状态点变绿）。
+                        // 这不显示任何界面，只是让进程活着（小组件恢复实时数字）。
                         try {
                             Thread.sleep(2500L);
                         } catch (InterruptedException ignored) {
@@ -342,79 +372,22 @@ public class SettingsActivity extends Activity {
                                 getApplicationContext(), "", 3000L);
                         if (a2.received) {
                             hostAnswered = true;
-                            activityAlive = a2.activityAlive;
-                            hookCount = a2.hookCount;
-                            hookFailed = a2.hookFailed;
-                            Logx.i("[launch] 进程已被广播拉起，状态恢复");
+                            Logx.i("[launch] 进程已被广播拉起");
                         }
                     }
                 } catch (Throwable ignored) {
                 }
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        refreshStatus();
-                        // 还在重启窗口里、又没答复 -> 过一会儿自己再来一次，
-                        // 免得用户盯着"正在重启"不动。
-                        if (!hostAnswered && System.currentTimeMillis() < restartingUntil) {
-                            new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
-                                @Override
-                                public void run() {
-                                    probeHost();
-                                }
-                            }, 1800L);
+                // 还在重启窗口里、又没答复 -> 过一会儿自己再来一次
+                if (!hostAnswered && System.currentTimeMillis() < restartingUntil) {
+                    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            probeHost();
                         }
-                    }
-                });
+                    }, 1800L);
+                }
             }
-        }, "bee-status-probe").start();
-    }
-
-    /**
-     * 刷新顶部状态。
-     *
-     * <p>只给结论 + 一行事实，不再堆三行解释——细节都进日志和「常见问题」。
-     * 状态点用 M3 语义色：就绪绿、部分可用琥珀、未就绪红。
-     */
-    private void refreshStatus() {
-        if (statusView == null) {
-            return;
-        }
-        boolean a11y = ShotAccessibilityService.isReady();
-        boolean root = RootShell.isGranted(this);
-
-        String head;
-        int color;
-        String hint = null;
-        if (!root) {
-            head = "缺少 root";
-            color = Ui.ERROR;
-            hint = "点下面「root 权限」授权后才能截屏";
-        } else if (System.currentTimeMillis() < restartingUntil) {
-            head = "正在重启蜜蜂记账";
-            color = Ui.WARN;
-            hint = "几秒后自动刷新";
-        } else {
-            // 走 headless 之后，蜜蜂记账是否在运行、截图监听是否在位，都不再是前提：
-            // 点磁贴时我们会自己拉起进程、自己起引擎派发。只要 root 有了就算就绪。
-            head = "就绪";
-            color = Ui.OK;
-            if (!a11y) {
-                hint = "无障碍没开（可选，只作备用截屏路径）";
-            }
-        }
-
-        statusView.setText("● " + head + (hint == null ? "" : "\n" + hint));
-        statusView.setTextColor(color);
-
-        if (statusFacts != null) {
-            StringBuilder f = new StringBuilder();
-            f.append("root ").append(root ? "✓" : "✗");
-            // headless 之后，"hook 装了几个""监听在不在位"都不再影响能不能记账
-            // （点磁贴会自己拉起进程、自己起引擎派发），只保留对用户有意义的两项。
-            f.append(" · 无障碍 ").append(a11y ? "✓" : "—（可选）");
-            statusFacts.setText(f.toString());
-        }
+        }, "bee-host-probe").start();
     }
 
     private String versionName() {
@@ -458,7 +431,6 @@ public class SettingsActivity extends Activity {
     private void requestRoot() {
         if (RootShell.isGranted(this)) {
             showToast("root 已授权");
-            refreshStatus();
             return;
         }
         final String mgr = rootManagerLabel();
@@ -471,7 +443,6 @@ public class SettingsActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        refreshStatus();
                         if (ok) {
                             showToast("root 已授权");
                         } else {
@@ -584,11 +555,9 @@ public class SettingsActivity extends Activity {
                                     "强制停止失败，改为直接打开蜜蜂记账", Toast.LENGTH_LONG).show();
                         }
                         hostAnswered = false;
-                        hookCount = -1;
                         // 强制停止后宿主进程确实没了，但这是"我们主动干的"，
-                        // 不能报成"连不上"——给它一个重启窗口，期间显示"正在重启"。
+                        // 给它一个重启窗口，这期间探测会自己重试，而不是一次问不到就放弃。
                         restartingUntil = System.currentTimeMillis() + 8000L;
-                        refreshStatus();
                         // 等强停真正落地再启动，否则可能被系统忽略
                         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
                             @Override
@@ -611,7 +580,7 @@ public class SettingsActivity extends Activity {
             }
         }, "bee-restart-host").start();
 
-        // 重启宿主之后磁贴的状态也要跟着重算一次（副标题里带着"截图监听是否在位"）。
+        // 重启宿主后请系统重新绑定一次磁贴：覆盖安装/强停之后磁贴容易"被晾着"（点了没反应）。
         ShotTileService.requestRefresh(this);
     }
 
@@ -641,6 +610,95 @@ public class SettingsActivity extends Activity {
         }, "bee-log-export").start();
     }
 
+    /**
+     * 「检查更新」：问一次 GitHub 上的最新发布，比版本号。
+     *
+     * <p>两条通道（API / update.json）见 {@link UpdateCheck}；这里只负责"后台问 → 前台说"。
+     * 不自动检查，只在用户点的时候查一次——模块平时不联网，这一点别破坏。
+     */
+    private void checkUpdate() {
+        Toast.makeText(this, "正在检查更新…", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final UpdateCheck.Info info = UpdateCheck.fetch();
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        showUpdateResult(info);
+                    }
+                });
+            }
+        }, "bee-update-check").start();
+    }
+
+    /** 把检查结果说清楚：有新版本给下载入口，没有就一句话。 */
+    private void showUpdateResult(final UpdateCheck.Info info) {
+        final String cur = UpdateCheck.current();
+        if (!info.ok) {
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                    .setTitle("检查失败")
+                    .setMessage("没拿到最新版本信息：\n" + info.error
+                            + "\n\n当前版本 v" + cur + "。稍后再试，或者直接去发布页看。")
+                    .setPositiveButton("知道了", null);
+            b.setNeutralButton("打开发布页", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    openUrl("https://github.com/USAMA6878786/beecount-shot/releases");
+                }
+            });
+            b.show();
+            return;
+        }
+
+        if (UpdateCheck.compare(info.latest, cur) > 0) {
+            android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                    .setTitle("发现新版本 v" + info.latest)
+                    .setMessage("当前 v" + cur + "，远端 v" + info.latest + "。\n\n"
+                            + "签名是一致的，下载后直接覆盖安装即可，不用卸载"
+                            + "（卸载会清掉 root 授权和 LSPosed 作用域）。")
+                    .setPositiveButton("下载 APK", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int which) {
+                            openUrl(info.apkUrl);
+                        }
+                    })
+                    .setNegativeButton("以后再说", null);
+            if (info.pageUrl != null) {
+                b.setNeutralButton("更新说明", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        openUrl(info.pageUrl);
+                    }
+                });
+            }
+            b.show();
+            return;
+        }
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("已是最新版本")
+                .setMessage("当前 v" + cur + "，远端 v" + info.latest + "。")
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
+    /** 用浏览器打开链接（下载 APK / 看说明都用它，不在应用内做下载器）。 */
+    private void openUrl(String url) {
+        if (url == null || url.length() == 0) {
+            showToast("没有可用的下载地址");
+            return;
+        }
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable t) {
+            Logx.w("[update] 打不开链接：" + t.getMessage());
+            showToast("打不开链接：" + t.getMessage());
+        }
+    }
+
     /** 一次性把关键信息写进日志（只开一次 root shell，几秒内完成）。 */
     private void runDiagnostics() {
         Toast.makeText(this, "正在诊断…", Toast.LENGTH_SHORT).show();
@@ -651,8 +709,7 @@ public class SettingsActivity extends Activity {
                 Logx.i("[diag] module=" + versionName()
                         + " android=" + Build.VERSION.RELEASE + " sdk=" + Build.VERSION.SDK_INT
                         + " model=" + Build.MANUFACTURER + " " + Build.MODEL);
-                Logx.i("[diag] a11y=" + ShotAccessibilityService.isReady()
-                        + " root=" + RootShell.isGranted(SettingsActivity.this));
+                Logx.i("[diag] root=" + RootShell.isGranted(SettingsActivity.this));
 
                 String pkg = HostInfo.pkg(SettingsActivity.this);
                 RootShell.collectDiagnostics(pkg);
@@ -675,7 +732,6 @@ public class SettingsActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        refreshStatus();
                         Toast.makeText(SettingsActivity.this,
                                 "诊断完成，请点「导出日志到 Download」",
                                 Toast.LENGTH_LONG).show();
@@ -778,6 +834,9 @@ public class SettingsActivity extends Activity {
     /** 申请「读取照片」权限的请求码（跟通知权限的 1001 区分开）。 */
     private static final int REQ_MEDIA = 1002;
 
+    /** 自动颜色校准页的请求码（1001 通知权限、1002 相册权限，接着往后排）。 */
+    private static final int REQ_COLOR = 1003;
+
     /** 申请「读取照片」权限（用于 MediaStore 快路）。拒绝不影响功能，只是退回 su 轮询。 */
     private void requestMediaPermissionIfNeeded() {
         try {
@@ -810,7 +869,12 @@ public class SettingsActivity extends Activity {
             }
             recreate();
         } else if (code == KeepAliveService.REQ_NOTIF) {
-            recreate();
+            boolean ok = granted.length > 0
+                    && granted[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            Logx.i("[settings] notif permission granted=" + ok);
+            if (!ok) {
+                showNotifDeniedDialog();
+            }
         }
     }
 
@@ -818,16 +882,34 @@ public class SettingsActivity extends Activity {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     }
 
-    /** 跑一次 screencap 验证（子线程，完成后弹框）。 */
-    private void runScreencapProbe() {
+    /**
+     * 「图片压缩」打开时的必要检测：**抓屏 + 压缩 + 颜色通道校准**，一次跑完。
+     *
+     * <p>为什么必须真抓：压缩本身不会失败，**抓屏会**（没 root、ROM 屏蔽 screencap、
+     * 安全窗口）。用户打开这个开关的动机是"让上传快点"，如果链路根本不通，
+     * 开关摆在那里就是骗人的——所以抓不到屏就直接把它拨回关闭，并说明原因。
+     *
+     * <p>为什么顺带校准颜色：压得再小，也快不过 raw 抓帧那条路（PNG 走 DEFLATE，
+     * 复杂画面能到 3MB / 900ms；raw 只要 200ms）。而 raw 出来的像素通道顺序
+     * 因 ROM 而异，不校准就**不敢用**。这两件事本来就是同一个诉求（快）。
+     *
+     * <p>校准是**静默**的（见 {@link RawCalibrate}）：只多抓一帧 PNG 当参照物，
+     * 在当前屏幕上逐点比对，不跳页面、不闪色块。只有在画面太素判不出来时，
+     * 才由用户自己决定要不要用"四色屏"那种精确办法补一次。
+     */
+    private void runCompressCheck() {
         final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
-        pd.setMessage("正在验证 screencap…");
+        pd.setMessage("正在检测抓屏与压缩…");
         pd.setCancelable(false);
         pd.show();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final String report = ScreencapProbe.run(SettingsActivity.this);
+                final ImageCompress.Check check =
+                        ImageCompress.check(SettingsActivity.this);
+                // 抓屏都不通的话，校色也没有意义，直接跳过
+                final RawCalibrate.Result calib =
+                        check.captureOk ? RawCalibrate.calibrate(SettingsActivity.this) : null;
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -835,39 +917,171 @@ public class SettingsActivity extends Activity {
                             pd.dismiss();
                         } catch (Throwable ignored) {
                         }
-                        new android.app.AlertDialog.Builder(SettingsActivity.this)
-                                .setTitle("screencap 验证结果")
-                                .setMessage(report)
-                                .setPositiveButton("知道了", null)
-                                .show();
+                        if (!check.captureOk) {
+                            new android.app.AlertDialog.Builder(SettingsActivity.this)
+                                    .setTitle("压缩没能开启")
+                                    .setMessage(check.text)
+                                    .setPositiveButton("知道了", null)
+                                    .show();
+                            // 抓屏都不通，压缩开着毫无意义：拨回关闭，别留一个假开关。
+                            Prefs.setCompress(SettingsActivity.this, false);
+                            recreate();
+                            return;
+                        }
+                        pendingCheck = check;
+                        showCheckResult(calib == null ? "跳过" : calib.verdict,
+                                calib == null || !calib.decided);
                     }
                 });
             }
-        }, "bee-screencap-probe").start();
+        }, "bee-compress-check").start();
+    }
+
+    /** 校验阶段的结果先存着，等颜色校准回来一起展示。 */
+    private ImageCompress.Check pendingCheck;
+
+    /**
+     * 四色屏精确校准（**只在静默校准判不出来时**由用户点按钮触发）。
+     *
+     * <p>色块法的判别力最干净（纯色，错的那个差 255），代价是要看两秒满屏色块。
+     * 所以它退居"补一刀"的位置，不再默认弹出来。
+     */
+    private void startColorCalibration() {
+        try {
+            Intent i = new Intent(this, ColorProbeActivity.class);
+            i.putExtra(ColorProbeActivity.EXTRA_AUTO, true);
+            startActivityForResult(i, REQ_COLOR);
+        } catch (Throwable t) {
+            Logx.w("[settings] 拉起颜色校准失败：" + t.getMessage());
+            showCheckResult("精确校准没跑起来（" + t.getMessage() + "）", false);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != REQ_COLOR) {
+            return;
+        }
+        String verdict = null;
+        if (result == RESULT_OK && data != null) {
+            verdict = data.getStringExtra(ColorProbeActivity.EXTRA_VERDICT);
+        }
+        if (verdict == null) {
+            verdict = "精确校准被跳过（raw 通道保持原样）";
+        }
+        showCheckResult(verdict, false);
     }
 
     /**
-     * Android 13+ 运行时申请通知权限。
+     * 把"压缩 + 颜色"两段结果合成一个弹框。
      *
-     * <p>只申请一次，而且**拒绝完全不影响常驻**——按系统规定，用户拒绝之后前台服务的提示
-     * 只是不再出现在通知栏（只在「任务管理器」里可见）。所以这里是"要不要看见那条提示"
-     * 的选择题。
+     * @param colorVerdict 颜色通道那一行的结论
+     * @param offerPrecise true = 弹窗里多给一个「精确校准」按钮（静默校准没判出来时）
      */
-    private void requestNotifPermissionIfNeeded() {
+    private void showCheckResult(String colorVerdict, boolean offerPrecise) {
+        ImageCompress.Check check = pendingCheck;
+        pendingCheck = null;
+        if (check == null) {
+            return;
+        }
+        String title = check.compressed ? "压缩已生效" : "压缩开着，但这张没省下体积";
+        String msg = check.text
+                + (colorVerdict == null ? "" : "\n\n颜色通道：" + colorVerdict)
+                + (offerPrecise ? "\n\n想用最准的办法（纯色四色屏，约 2 秒）再测一次，点下面的按钮。" : "");
+        android.app.AlertDialog.Builder b = new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(msg)
+                .setPositiveButton("知道了", null);
+        if (offerPrecise) {
+            b.setNeutralButton("精确校准", new android.content.DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(android.content.DialogInterface d, int which) {
+                    startColorCalibration();
+                }
+            });
+        }
+        b.show();
+    }
+
+    /**
+     * 申请通知权限（Android 13+）。
+     *
+     * <h3>为什么这件事必须在"第一次打开设置页"就做</h3>
+     * 磁贴点完只有两条反馈：截图成功的 Toast、截图失败的 Toast。而这台机器上
+     * **没有通知权限时 Toast 会被系统直接吞掉**——用户看到的就是"点了没反应"，
+     * 既不知道成功也不知道失败。
+     *
+     * <p>模块是 LSPosed 模块，没有常驻界面、没有系统入口会替它弹这个框。
+     * 用户主动点开设置页，可能就是唯一的机会；错过这次，就只能靠他自己去
+     * 系统设置里翻。所以默认值也一起改了（见 {@link Prefs#notifAsked}）。
+     *
+     * @param firstOpen true = 初次打开自动触发，问过就不再问；
+     *                  false = 用户自己动了「常驻运行」开关，这时即使问过也再试一次
+     */
+    private void askNotificationPermission(boolean firstOpen) {
         if (Build.VERSION.SDK_INT < 33 || KeepAliveService.hasNotifPermission(this)) {
             return;
         }
-        if (Prefs.notifAsked(this)) {
+        if (firstOpen && Prefs.notifAsked(this)) {
             return; // 问过一次就别再烦人，让用户自己去系统设置里开
         }
         Prefs.setNotifAsked(this, true);
+        // 等页面先画出来再弹框：Android 的权限框是盖在 Activity 上的，
+        // 太早弹会看到"白屏 + 权限框"。
+        requestNotifPermission(450L);
+    }
+
+    /**
+     * 真正去要权限。{@code delayMs} 给页面留出绘制时间。
+     *
+     * <p>系统无论如何都会回调 {@link #onRequestPermissionsResult}：用户点了"拒绝"、
+     * 或者系统因为"拒过两次"直接返回拒绝，都会落到同一个分支里，由那里给出说明和入口。
+     */
+    private void requestNotifPermission(long delayMs) {
+        new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    requestPermissions(
+                            new String[]{"android.permission.POST_NOTIFICATIONS"},
+                            KeepAliveService.REQ_NOTIF);
+                } catch (Throwable t) {
+                    Logx.w("[settings] request notif permission failed: " + t.getMessage());
+                }
+            }
+        }, delayMs);
+    }
+
+    /** 跳到本应用的通知设置页（拒绝过之后系统不再弹框，只能这样找回来）。 */
+    private void openNotifSettings() {
         try {
-            requestPermissions(
-                    new String[]{"android.permission.POST_NOTIFICATIONS"},
-                    KeepAliveService.REQ_NOTIF);
+            Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+            i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
         } catch (Throwable t) {
-            Logx.w("[settings] request notif permission failed: " + t.getMessage());
+            Logx.e("[settings] open notif settings failed", t);
+            showToast("打不开系统通知设置：" + t.getMessage());
         }
+    }
+
+    /** 用户拒绝了通知权限时的说明（对话框，不走 Toast——此刻 Toast 正好是坏的）。 */
+    private void showNotifDeniedDialog() {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("没给通知权限")
+                .setMessage("没有它，点磁贴之后「截图成功 / 截图失败」的提示会被系统吞掉，"
+                        + "看起来就像点了没反应。\n\n"
+                        + "截图和记账本身不受影响。想要提示的话，"
+                        + "在系统设置里把「记账截图」的通知打开即可。")
+                .setPositiveButton("去打开", new android.content.DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(android.content.DialogInterface d, int which) {
+                        openNotifSettings();
+                    }
+                })
+                .setNegativeButton("不用了", null)
+                .show();
     }
 
     // ------------------------------------------------------------ 界面小工具
