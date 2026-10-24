@@ -505,6 +505,9 @@ public class BeeShotModule extends XposedModule {
                         if (HostHeadlessEngine.uiEnginePresent()) {
                             Logx.i("[headless] 界面引擎在，但按纯 headless 模式仍由我们派发");
                         }
+                        // 派发请求里带着模块设置页那个开关的最新值，先同步过来
+                        HostWatcher.setAutoDelete(
+                                intent.getBooleanExtra(Const.EXTRA_AUTO_DELETE, true));
                         Logx.i("[headless] 收到派发请求，开始起无界面引擎");
                         HostHeadlessEngine.boot(c, hostCl, null);
                     } catch (Throwable t) {
@@ -558,6 +561,9 @@ public class BeeShotModule extends XposedModule {
                     if (args.length > 0 && args[0] != null) {
                         HostState.setEngine(args[0]);
                         Logx.i("[hook] 已捕获 FlutterEngine（供重挂观察者用）");
+                        // 界面引擎起来了 → 让无界面引擎让位（两个 Dart 抢 prefs 会抛
+                        // ConcurrentModificationException，实测过）
+                        HostHeadlessEngine.yieldToUiEngine();
                     }
                 } catch (Throwable t) {
                     Logx.w("[hook] 捕获 engine 失败：" + t.getMessage());
