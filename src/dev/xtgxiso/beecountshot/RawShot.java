@@ -2,11 +2,9 @@ package dev.xtgxiso.beecountshot;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
@@ -29,9 +27,6 @@ import java.nio.IntBuffer;
  */
 final class RawShot {
 
-    /** 颜色比对允许的单通道误差（PNG 与 JPEG 有损，90 质量下一般 <10）。 */
-    private static final int COLOR_TOLERANCE = 24;
-
     /** 抓一帧，raw → JPEG，写进相册。只在通道顺序已校准后由 {@link ScreencapShot#take} 调用。 */
     static String take(Context c) {
         int swap = Prefs.rawSwap(c);
@@ -52,7 +47,14 @@ final class RawShot {
                 return null;
             }
             Logx.i("[raw] 抓帧 " + ms + "ms size=" + raw.length() + " swap=" + swap);
-            String p = ScreencapShot.insertJpeg(c, bmp);
+            // 「图片压缩」开着就把大图缩到长边上限、质量降到 85（省上传时间）；
+            // 关着就保持原来的质量 90、原尺寸。
+            int quality = 90;
+            if (Prefs.compress(c)) {
+                bmp = ImageCompress.fit(bmp);   // 需要缩小时会回收旧 bitmap
+                quality = ImageCompress.QUALITY;
+            }
+            String p = ScreencapShot.insertJpeg(c, bmp, quality);
             bmp.recycle();
             return p;
         } catch (Throwable t) {
@@ -62,45 +64,6 @@ final class RawShot {
             //noinspection ResultOfMethodCallIgnored
             raw.delete();
         }
-    }
-
-    private static String scoreText(int[] s) {
-        if (s[1] < 0) {
-            return "✗ 解码失败";
-        }
-        if (s[0] == 0) {
-            return "✓ 通过（最大差 " + s[1] + "）";
-        }
-        return "✗ " + s[0] + "/9 点超容差（最大差 " + s[1] + "）";
-    }
-
-    /** @return {超容差点数, 最大单通道差} */
-    private static int[] scoreColors(Bitmap a, Bitmap b) {
-        if (a.getWidth() != b.getWidth() || a.getHeight() != b.getHeight()) {
-            return new int[]{9, 255};
-        }
-        int w = a.getWidth();
-        int h = a.getHeight();
-        int bad = 0;
-        int max = 0;
-        int[][] pts = new int[][]{
-                {w / 6, h / 6}, {w / 2, h / 6}, {w * 5 / 6, h / 6},
-                {w / 6, h / 2}, {w / 2, h / 2}, {w * 5 / 6, h / 2},
-                {w / 6, h * 5 / 6}, {w / 2, h * 5 / 6}, {w * 5 / 6, h * 5 / 6},
-        };
-        for (int[] p : pts) {
-            int ca = a.getPixel(p[0], p[1]);
-            int cb = b.getPixel(p[0], p[1]);
-            int dr = Math.abs(((ca >> 16) & 0xFF) - ((cb >> 16) & 0xFF));
-            int dg = Math.abs(((ca >> 8) & 0xFF) - ((cb >> 8) & 0xFF));
-            int db = Math.abs((ca & 0xFF) - (cb & 0xFF));
-            int d = Math.max(dr, Math.max(dg, db));
-            max = Math.max(max, d);
-            if (d > COLOR_TOLERANCE) {
-                bad++;
-            }
-        }
-        return new int[]{bad, max};
     }
 
     /**
