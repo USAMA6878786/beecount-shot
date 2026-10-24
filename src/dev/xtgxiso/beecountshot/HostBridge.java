@@ -93,14 +93,9 @@ final class HostBridge {
                         Logx.e("[bridge] background init failed", t);
                     }
 
-                    // 提前确认/申请一次 root：删除公共存储里的文件需要它。
-                    // 放在启动时是为了让授权弹窗出现在可预期的时刻，
-                    // 而不是在"刚记完账"的中间突然弹出来。拒绝也不会重复弹。
-                    try {
-                        HostRoot.ensure(appRef);
-                    } catch (Throwable t) {
-                        Logx.e("[bridge] host root probe failed", t);
-                    }
+                    // 不再向宿主申请 root：删图已改由模块 App 执行（它自己有 root，
+                    // 且是这张图在相册里的创建者），宿主只负责通知。
+                    // 这样蜜蜂记账本体完全不需要 root 授权，也不会在启动时弹授权框。
                 }
             }, "bee-host-init").start();
         }
