@@ -133,8 +133,25 @@ public class ExpenseWidgetProvider extends AppWidgetProvider {
         }
     }
 
-    /** 刷新所有小组件（记账成功后也可以调）。 */
+    /** 上一次真正刷新所有小组件的时刻。见 {@link #refreshAll} 里的去重说明。 */
+    private static volatile long lastRefreshAllAt = 0L;
+
+    /**
+     * 刷新所有小组件（记账成功后也可以调）。
+     *
+     * <p>**400ms 内重复调用直接丢掉。** 因为"记账成功"那条刷新是**双通道**发的
+     * （普通广播 + root 的 {@code am broadcast} 兜底，见 HostWatcher.pingWidget），
+     * 两条都会到，于是每一次记账都要多跑一遍"查库 + 重绘"——
+     * 真机日志里每次都能看到两遍 {@code host answered} 和两遍 {@code drawn}。
+     * 数字是一样的，第二遍纯属白干。
+     */
     static void refreshAll(final Context context) {
+        long now = System.currentTimeMillis();
+        if (now - lastRefreshAllAt < 400L) {
+            Logx.i("[widget] 400ms 内刚刷过，跳过这次重复刷新");
+            return;
+        }
+        lastRefreshAllAt = now;
         new Thread(new Runnable() {
             @Override
             public void run() {
