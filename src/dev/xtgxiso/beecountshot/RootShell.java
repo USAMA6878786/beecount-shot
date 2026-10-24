@@ -547,6 +547,28 @@ public final class RootShell {
         public String err = "";
     }
 
+    /**
+     * 起一个**不等结果**的 su 进程（后台长跑用）。
+     *
+     * <p>为什么不复用 {@link #exec}：exec 会阻塞等命令结束。而"对齐循环戳"要求
+     * 一次 su 里长时间循环（每次 content query 约 1 秒，循环 5 次要 25 秒），
+     * 阻塞住会把调用线程（主线程）卡死。
+     *
+     * @param cmd 要执行的命令；失败返回 null
+     */
+    public static Process startAsync(String cmd) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder("su", "-c", cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            Logx.i("[root] async started: " + cmd);
+            return p;
+        } catch (Throwable t) {
+            Logx.e("[root] async start failed: " + cmd, t);
+            return null;
+        }
+    }
+
     public static Result exec(String cmd, long timeoutMs) {
         Result r = new Result();
         Process p = null;
