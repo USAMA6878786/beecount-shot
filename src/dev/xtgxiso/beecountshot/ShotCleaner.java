@@ -66,7 +66,7 @@ final class ShotCleaner {
      * 这条规则对它们永远不成立——它们会一直躺在相册里。用户看到的"还剩一张"就是这么来的。
      *
      * <p>所以再加一条判据：**点下磁贴之后 6 秒内出现的截图，就是我们的**。
-     * 无障碍直调约 0.4 秒落盘，最慢的 root 兜底也不到 4 秒，6 秒留足余量，
+     * root 抓帧约 0.2~0.5 秒落盘，最慢的注入按键兜底也不到 4 秒，6 秒留足余量，
      * 又不会把用户随手手动截的图卷进来（那得在点磁贴后 6 秒内再手动截一张，概率极低）。
      */
     private static final long MINE_WINDOW_MS = 6000L;
@@ -170,6 +170,28 @@ final class ShotCleaner {
                 List<String> cands = from == Long.MAX_VALUE
                         ? new ArrayList<String>()
                         : RootShell.findScreenshotsSince(from, to);
+
+                // 窗口里一张图都没有 = 没有东西可删（截屏失败，或者图已经被无界面路径删掉了）。
+                // 这种情况没必要再扫到 60 秒：每 5 秒一次 root 扫盘，实测一次点击白扫十来次。
+                // 8 秒是"落盘上限"的保守值（实测最慢约 1 秒，留足余量避免误判"还没落盘"）。
+                if (cands.isEmpty()) {
+                    long t = System.currentTimeMillis();
+                    boolean allExpired = true;
+                    for (Task task : snapshot) {
+                        if (t <= task.shotAt + 8000L) {
+                            allExpired = false;
+                            break;
+                        }
+                    }
+                    if (allExpired) {
+                        synchronized (LOCK) {
+                            TASKS.removeAll(snapshot);
+                        }
+                        Logx.i("[clean] 窗口内已无截图，任务提前结束（不再空转）");
+                    }
+                    sleepQuietly(300L);
+                    continue;
+                }
 
                 // 同一张图这一轮只查一次宿主，结果共享
                 java.util.Map<String, ShotBridge.Answer> cache =
@@ -356,18 +378,28 @@ final class ShotCleaner {
      *
      * <p>仍然尊重设置页的「识别后删除截图」开关。
      */
-    static void deleteAfterHeadless(Context ctx, String path) {
+    static boolean deleteAfterHeadless(Context ctx, String path) {
         try {
             if (ctx == null || path == null || path.length() == 0) {
-                return;
+                return false;
             }
-            if (!Prefs.autoDelete(ctx)) {
+            // 这个函数**两个进程都会跑**：
+            //   · 模块 App 进程（普通清理任务）——读自己的 SharedPreferences 就对了；
+            //   · 宿主进程（无界面引擎回执）——那里读 Prefs 读到的是**宿主自己的** cfg，
+            //     永远是默认值 true，结果就是"不管开关关没关都删"（真机就是这么复现的）。
+            // 所以宿主进程里必须用 ARM/派发广播带过来的那个值。
+            boolean allow = Const.MODULE_PKG.equals(ctx.getPackageName())
+                    ? Prefs.autoDelete(ctx)
+                    : HostWatcher.autoDeleteEnabled();
+            if (!allow) {
                 Logx.i("[clean] 自动删图关着，保留：" + RootShell.baseName(path));
-                return;
+                return false;
             }
             doDelete(ctx, path, 0L);
+            return true;
         } catch (Throwable t) {
             Logx.e("[clean] 无界面路径删图失败", t);
+            return false;
         }
     }
 
