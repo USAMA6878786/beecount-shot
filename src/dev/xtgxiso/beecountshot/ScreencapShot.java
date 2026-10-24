@@ -63,6 +63,7 @@ final class ScreencapShot {
             Logx.w("[screencap] raw 失败，本次退回 PNG");
         }
         File tmp = new File(c.getCacheDir(), "prod_shot.png");
+        File compressed = null;
         //noinspection ResultOfMethodCallIgnored
         tmp.delete();
         try {
@@ -81,23 +82,36 @@ final class ScreencapShot {
                 // 让蜜蜂记账照常跑一遍识别——它识别不出来就会按"未识别"处理。
                 Logx.w("[screencap] 体积偏小（" + size + " 字节），可能是安全窗口截出的黑图");
             }
-            return insertIntoGallery(c, tmp);
+            // 「图片压缩」开着就先压一道：上传给 AI 的是这份，截到的画面不变。
+            // 压不动（失败 / 没变小）就照原图走，绝不因为压缩丢图。
+            File upload = tmp;
+            if (Prefs.compress(c)) {
+                compressed = ImageCompress.compressFile(c, tmp);
+                if (compressed != null) {
+                    upload = compressed;
+                }
+            }
+            return insertIntoGallery(c, upload);
         } catch (Throwable t) {
             Logx.e("[screencap] 失败", t);
             return null;
         } finally {
             //noinspection ResultOfMethodCallIgnored
             tmp.delete();
+            if (compressed != null) {
+                //noinspection ResultOfMethodCallIgnored
+                compressed.delete();
+            }
         }
     }
 
-    /** 把抓到的 png 作为"一张截图"写进 DCIM/Screenshots，并返回它在媒体库里的路径。 */
+    /** 把抓到的图作为"一张截图"写进 DCIM/Screenshots，并返回它在媒体库里的路径。 */
     /** 把一张 Bitmap 压成 JPEG 写进相册（raw 提速路径用）。 */
-    static String insertJpeg(Context c, android.graphics.Bitmap bmp) {
+    static String insertJpeg(Context c, android.graphics.Bitmap bmp, int quality) {
         File jpg = new File(c.getCacheDir(), "prod_shot.jpg");
         try {
             java.io.FileOutputStream os = new java.io.FileOutputStream(jpg);
-            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, os);
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, os);
             os.close();
             String name = "Screenshot_" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
                     .format(new Date()) + "_beecountshot.jpg";
@@ -111,10 +125,12 @@ final class ScreencapShot {
         }
     }
 
-    private static String insertIntoGallery(Context c, File png) {
+    /** 按扩展名决定 MIME 和文件名：压缩过的是 jpg，没压的是 png。 */
+    private static String insertIntoGallery(Context c, File f) {
+        boolean jpeg = f.getName().toLowerCase(Locale.US).endsWith(".jpg");
         String name = "Screenshot_" + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
-                .format(new Date()) + "_beecountshot.png";
-        return insert(c, png, name, "image/png");
+                .format(new Date()) + "_beecountshot." + (jpeg ? "jpg" : "png");
+        return insert(c, f, name, jpeg ? "image/jpeg" : "image/png");
     }
 
     private static String insert(Context c, File png, String name, String mime) {
